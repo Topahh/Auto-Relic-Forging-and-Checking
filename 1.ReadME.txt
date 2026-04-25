@@ -1,0 +1,23 @@
+【前置安装说明】
+一、环境要求
+使用本工具前，请确认已安装Python 3.13版本（可使用本文件自带版本）。
+
+二、在线安装依赖库
+1. 按下Win+R组合键，打开"运行"对话框；
+2. 输入"cmd"，打开命令提示符窗口；
+3. 在命令行中依次输入以下内容：
+python -m pip install pymem paddleocr opencv-python pyautogui pydirectinput keyboard
+python -m pip install paddlepaddle-gpu==3.2.2 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+
+======================================
+【Pre-installation Instructions】
+
+I. System Requirements
+Before using this tool, please ensure that Python 3.13 is installed (you may use the version included with this package).
+
+II. Dependency Online Installation
+1. Press Win+R to open the "Run" dialog box;
+2. Type "cmd" to open the Command Prompt window;
+3. Enter the following commands sequentially in the command line:
+python -m pip install pymem paddleocr opencv-python pyautogui pydirectinput keyboard
+python -m pip install paddlepaddle-gpu==3.2.2 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
