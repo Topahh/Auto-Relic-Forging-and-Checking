@@ -28,6 +28,7 @@ class ForgeBot:
         self.matcher  = ItemMatcher(self.cfg)
         self.capture  = ScreenCapture(self.cfg.SCAN_REGION)
         # self.debug_save_capture_series("before_round")
+        self.debug_screenshot()
         self.stats       = Statistics(self.cfg.lang)
         self.stop_signal = StopSignal(self.cfg.lang)
         self.stop_signal.clear()
@@ -225,7 +226,7 @@ class ForgeBot:
             time.sleep(delay)
 
     # ==================== RUN_ROUND ====================
-    
+
     def run_round(self) -> bool:
         """
         First round:
@@ -251,7 +252,6 @@ class ForgeBot:
         time.sleep(self.cfg.WAIT_ANIM_EXTRA)
 
         processed_count = 0
-
         for item_idx in range(1, self.cfg.BATCH_SIZE + 1):
             if self.stop_signal.should_stop():
                 return False
@@ -264,6 +264,11 @@ class ForgeBot:
                 break
 
             processed_count += 1
+        
+        if processed_count == self.cfg.BATCH_SIZE:
+            print(" [FLOW] Exiting relic menu after batch...")
+            self.keyboard.exit_relic_menu()
+            time.sleep(self.cfg.WAIT_ANIM_EXTRA)
 
         print(f"\n 🎯 FINAL Batch: {processed_count}/{self.cfg.BATCH_SIZE} relics processed")
         return processed_count == self.cfg.BATCH_SIZE

@@ -167,7 +167,7 @@ class KeyboardController:
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
         self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
+        time.sleep(self.cfg.WAIT_ANIM_EXTRA)
 
     def forge_cycle_start(self):
         """New forge sequence: F (open) -> F2 (choose 10 relics) -> F (confirm) -> F (confirm, skip animation)"""
@@ -189,6 +189,12 @@ class KeyboardController:
 
     def forge_end(self):
         """Confirm the end of a forging session and wait for the UI transition."""
+        self._focus_game()
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+
+    def exit_relic_menu(self):
+        """Exit the relic menu and return to main menu."""
         self._focus_game()
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
