@@ -3,41 +3,38 @@
 # Uses xdotool to send keystrokes to the game window identified by its title.
 # Requires xdotool to be installed: sudo dnf install xdotool
 
-
 import os
 import time
 import subprocess
 
-
 from config.settings import Config
-
 
 # ------------------------------------------------------------------
 # Keyboard controller
 # ------------------------------------------------------------------
-
 
 class KeyboardController:
     """
     Sends keystrokes to the game window using xdotool.
 
     On startup, verifies that xdotool is available and resolves the game
-    window ID by title. All key presses are routed to that window to avoid
+    window ID by title.  All key presses are routed to that window to avoid
     focus side-effects on other applications.
 
     Key names are normalized through _KEY_MAP before being passed to xdotool.
+    All timing values are read from cfg — no hardcoded sleeps.
     """
 
     _KEY_MAP = {
-        'down':   'Down',   'up':     'Up',      'right': 'Right', 'left': 'Left',
-        'enter':  'Return', 'return': 'Return',  'escape': 'Escape',
-        'esc':    'Escape', 'space':  'space',   'tab':   'Tab',   'f': 'f',
-        '2':      '2',      '3':      '3',
+        'down': 'Down', 'up': 'Up', 'right': 'Right', 'left': 'Left',
+        'enter': 'Return', 'return': 'Return', 'escape': 'Escape',
+        'esc': 'Escape', 'space': 'space', 'tab': 'Tab', 'f': 'f',
+        '2': '2', '3': '3',
     }
 
     def __init__(self, cfg: Config):
-        self.cfg        = cfg
-        self._env       = {**os.environ, 'DISPLAY': ':0'}
+        self.cfg = cfg
+        self._env = {**os.environ, 'DISPLAY': ':0'}
         self._window_id = None
         self._verify_and_find_window()
 
@@ -59,11 +56,11 @@ class KeyboardController:
             return
         print("[OK] xdotool detected")
 
-        # Search for the game window by its title
         r = subprocess.run(
             ['xdotool', 'search', '--name', 'ELDEN RING NIGHTREIGN'],
             capture_output=True, text=True, env=self._env
         )
+
         if r.returncode == 0 and r.stdout.strip():
             self._window_id = r.stdout.strip().split('\n')[0]
             print(f"[OK] Game window found — ID {self._window_id}")
@@ -77,27 +74,27 @@ class KeyboardController:
     def warmup_permissions(self):
         """
         Trigger an early focus + harmless keypress to initialize input permissions.
-
-        Call this once at startup before the main loop begins.
+        Delay steps use cfg.WARMUP_DELAY (from [Timing] warmup_delay).
         """
         self._focus_game()
-        time.sleep(0.2)
+        time.sleep(self.cfg.WARMUP_DELAY)
 
-        # Harmless keypress to trigger permission / driver initialization
         subprocess.run(
             ['xdotool', 'key', '--clearmodifiers', 'Shift_L'],
             env=self._env, capture_output=True
         )
-        time.sleep(0.2)
+
+        time.sleep(self.cfg.WARMUP_DELAY)
 
     def _focus_game(self):
-        """Focus the game window before sending any input."""
+        """Focus the game window before sending any input.
+        Delay uses cfg.FOCUS_DELAY (from [Timing] focus_delay)."""
         if self._window_id:
             subprocess.run(
                 ['xdotool', 'windowfocus', '--sync', self._window_id],
                 capture_output=True, env=self._env
             )
-            time.sleep(0.05)
+            time.sleep(self.cfg.FOCUS_DELAY)
 
     # ------------------------------------------------------------------
     # Key press primitives
@@ -107,7 +104,7 @@ class KeyboardController:
         """
         Send a single keystroke to the game via xdotool.
 
-        The key name is normalized through _KEY_MAP. If no explicit delay is
+        The key name is normalized through _KEY_MAP.  If no explicit delay is
         provided, falls back to cfg.KEY_INTERVAL.
         """
         xkey = self._KEY_MAP.get(key.lower(), key)
@@ -115,7 +112,7 @@ class KeyboardController:
             ['xdotool', 'key', '--clearmodifiers', xkey],
             env=self._env, capture_output=True
         )
-        time.sleep(delay or self.cfg.KEY_INTERVAL)
+        time.sleep(delay if delay is not None else self.cfg.KEY_INTERVAL)
 
     # ------------------------------------------------------------------
     # Game actions
@@ -134,14 +131,15 @@ class KeyboardController:
         """
         Execute the key sequence to open the forge menu and start a forging session.
 
-        Focuses the game window first, then navigates through the menu.
-        The 0.5s sleep accounts for the UI transition animation.
+        The mid-sequence pause (between the 2nd and 3rd KEY_INTERACT) uses
+        cfg.FORGE_MENU_SLEEP (from [Timing] forge_menu_sleep).
+        The final wait uses cfg.WAIT_ANIM (from [Timing] wait_anim).
         """
-        self._focus_game()                    # Focus before sending any input
+        self._focus_game()
         self.press(self.cfg.KEY_INTERACT)
         self.press(self.cfg.KEY_DOWN)
         self.press(self.cfg.KEY_INTERACT)
-        time.sleep(0.5)                       # Increased from 0.2 to 0.5 for slower screens
+        time.sleep(self.cfg.FORGE_MENU_SLEEP)   # UI transition between submenu pages
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
 
@@ -155,7 +153,6 @@ class KeyboardController:
 # ------------------------------------------------------------------
 # Helper I/O (shared utility)
 # ------------------------------------------------------------------
-
 
 def _readline_with_timeout(pipe, timeout=45):
     """

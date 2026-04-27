@@ -4,27 +4,27 @@
 # Exposes a single recognize() method that returns extracted text lines
 # from a numpy image array.
 
-
 import numpy as np
 from typing import List
 from paddleocr import PaddleOCR
 import paddle
 
+from config.settings import Config
 
 # ==================== OCR engine ====================
-
 
 class OCREngine:
     """
     Wrapper around PaddleOCR for in-game text recognition.
 
-    Initializes the PaddleOCR engine at construction time.
-    GPU acceleration is used automatically if CUDA is available;
-    otherwise falls back to CPU mode.
+    Accepts a Config instance to read OCR_LANG (and any future OCR settings)
+    instead of hardcoding the language.  GPU acceleration is used automatically
+    if CUDA is available; otherwise falls back to CPU mode.
     """
 
-    def __init__(self):
+    def __init__(self, cfg: Config):
         print("[INIT] Loading OCR engine...")
+        print(f"[INIT] OCR language: {cfg.OCR_LANG}")
 
         try:
             import paddle
@@ -32,17 +32,16 @@ class OCREngine:
                 paddle.device.is_compiled_with_cuda()
                 and paddle.device.cuda.device_count() > 0
             )
-
             if has_gpu:
-                print("[OK]   GPU support detected — GPU acceleration enabled")
+                print("[OK] GPU support detected — GPU acceleration enabled")
             else:
                 print("[INFO] No GPU detected — running in CPU mode")
         except Exception as e:
             print(f"[WARN] Could not check GPU availability: {e}")
 
         self.engine = PaddleOCR(
-            lang='en',                          # Recognition language: English
-            use_textline_orientation=False      # Disable text line orientation detection
+            lang=cfg.OCR_LANG,              # Language read from hajiwo.ini [OCR]
+            use_textline_orientation=False  # Disable text line orientation detection
         )
 
         print("[OK] OCR engine ready\n")
@@ -56,7 +55,7 @@ class OCREngine:
         Run OCR on a BGR numpy image and return a list of recognized text strings.
 
         Supports both the dict-based output format (PaddleOCR v3+, 'rec_texts' key)
-        and the legacy list-based format. Returns an empty list on failure.
+        and the legacy list-based format.  Returns an empty list on failure.
         """
         try:
             results = self.engine.predict(image)
