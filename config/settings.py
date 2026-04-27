@@ -78,30 +78,32 @@ class Config:
     - [Keywords]    : relic keyword groups
 
     Key bindings:
-    - KEY_INTERACT      : interact / confirm
-    - KEY_DOWN          : navigate down
-    - KEY_RIGHT         : navigate right
-    - KEY_KEEP          : keep item action
-    - KEY_DISCARD       : discard item action
+    - KEY_INTERACT          : interact / confirm
+    - KEY_DOWN              : navigate down
+    - KEY_RIGHT             : navigate right
+    - KEY_KEEP              : keep item action
+    - KEY_DISCARD           : discard item action
+    - KEY_CHOSE_10_RELICS   : select batch of 10 relics (F2)
 
     Base timing (keyboard):
     - KEY_INTERVAL      : general delay after each keypress (s)
     - WAIT_ANIM         : UI transition delay for forge start/end screens (s)
+    - WAIT_ANIM_EXTRA   : long wait after entering relic scroll mode (s)
     - FORGE_MENU_SLEEP  : mid-sequence sleep inside forge_start() navigation (s)
     - FORGE_READY_SLEEP : sleep after forge_start() completes in run_round() (s)
     - FOCUS_DELAY       : sleep after xdotool windowfocus in _focus_game() (s)
     - WARMUP_DELAY      : sleep steps in warmup_permissions() (s)
 
     Sync / OCR (ForgeBot):
-    - SYNC_THRESHOLD    : frame pixel diff mean threshold to detect screen change
-    - SYNC_TIMEOUT      : max wait time for next item (s)
-    - POLL_INTERVAL     : polling interval during wait_for_next_item loop (s)
-    - EMPTY_READS_MAX   : consecutive empty OCR reads before declaring end of list
-    - MIN_TEXT_LEN      : minimum OCR text length to be considered valid
-    - BATCH_SIZE        : max items processed per round
+    - SYNC_THRESHOLD : frame pixel diff mean threshold to detect screen change
+    - SYNC_TIMEOUT   : max wait time for next item (s)
+    - POLL_INTERVAL  : polling interval during wait_for_next_item loop (s)
+    - EMPTY_READS_MAX: consecutive empty OCR reads before declaring end of list
+    - MIN_TEXT_LEN   : minimum OCR text length to be considered valid
+    - BATCH_SIZE     : max items processed per round
 
     OCR engine:
-    - OCR_LANG          : PaddleOCR recognition language (e.g. 'en', 'ch')
+    - OCR_LANG : PaddleOCR recognition language (e.g. 'en', 'ch')
     """
 
     # Screen
@@ -111,32 +113,34 @@ class Config:
     KEYWORD_GROUPS: dict = None
 
     # Controls
-    KEY_INTERACT: str  = "f"
-    KEY_DOWN:     str  = "down"
-    KEY_RIGHT:    str  = "right"
-    KEY_KEEP:     str  = "2"
-    KEY_DISCARD:  str  = "3"
+    KEY_INTERACT:        str = "f"
+    KEY_DOWN:            str = "down"
+    KEY_RIGHT:           str = "right"
+    KEY_KEEP:            str = "right"
+    KEY_DISCARD:         str = "3"
+    KEY_CHOSE_10_RELICS: str = "f2"     # ← NEW
 
     # Base timing
-    KEY_INTERVAL:      float = 0.10
-    WAIT_ANIM:         float = 0.20
-    BATCH_SIZE:        int   = 10
+    KEY_INTERVAL: float = 0.30
+    WAIT_ANIM:    float = 0.20
+    BATCH_SIZE:   int   = 10
 
     # Extended keyboard timing
+    WAIT_ANIM_EXTRA:   float = 4.0    # ← NEW — long wait into relic scroll mode
     FORGE_MENU_SLEEP:  float = 0.50   # Mid-sequence inside forge_start()
     FORGE_READY_SLEEP: float = 0.50   # After forge_start() in run_round()
     FOCUS_DELAY:       float = 0.05   # After windowfocus in _focus_game()
     WARMUP_DELAY:      float = 0.20   # Steps in warmup_permissions()
 
     # Sync parameters (ForgeBot)
-    SYNC_THRESHOLD:    float = 2.5
-    SYNC_TIMEOUT:      float = 3.0
-    POLL_INTERVAL:     float = 0.1
-    EMPTY_READS_MAX:   int   = 3
-    MIN_TEXT_LEN:      int   = 2
+    SYNC_THRESHOLD: float = 2.5
+    SYNC_TIMEOUT:   float = 3.0
+    POLL_INTERVAL:  float = 0.1
+    EMPTY_READS_MAX: int  = 3
+    MIN_TEXT_LEN:    int  = 2
 
     # OCR engine
-    OCR_LANG:          str   = "en"
+    OCR_LANG: str = "en"
 
     # Language (loaded last)
     lang: Language = None
@@ -171,28 +175,30 @@ class Config:
         # [Controls] — key bindings
         # --------------------------------------------------------------
         if config_file.has_section('Controls'):
-            self.KEY_INTERACT = config_file.get('Controls', 'key_interact', fallback=self.KEY_INTERACT)
-            self.KEY_DOWN     = config_file.get('Controls', 'key_down',     fallback=self.KEY_DOWN)
-            self.KEY_RIGHT    = config_file.get('Controls', 'key_right',    fallback=self.KEY_RIGHT)
-            self.KEY_KEEP     = config_file.get('Controls', 'key_keep',     fallback=self.KEY_KEEP)
-            self.KEY_DISCARD  = config_file.get('Controls', 'key_discard',  fallback=self.KEY_DISCARD)
+            self.KEY_INTERACT        = config_file.get('Controls', 'key_interact',          fallback=self.KEY_INTERACT)
+            self.KEY_DOWN            = config_file.get('Controls', 'key_down',               fallback=self.KEY_DOWN)
+            self.KEY_RIGHT           = config_file.get('Controls', 'key_right',              fallback=self.KEY_RIGHT)
+            self.KEY_KEEP            = config_file.get('Controls', 'key_keep',               fallback=self.KEY_KEEP)
+            self.KEY_DISCARD         = config_file.get('Controls', 'key_discard',            fallback=self.KEY_DISCARD)
+            self.KEY_CHOSE_10_RELICS = config_file.get('Controls', 'key_chose_10_relics',    fallback=self.KEY_CHOSE_10_RELICS)  # ← NEW
 
         # --------------------------------------------------------------
         # [Timing] — all timing and sync parameters
         # --------------------------------------------------------------
         if config_file.has_section('Timing'):
-            self.KEY_INTERVAL      = config_file.getfloat('Timing', 'key_interval',      fallback=self.KEY_INTERVAL)
-            self.WAIT_ANIM         = config_file.getfloat('Timing', 'wait_anim',         fallback=self.WAIT_ANIM)
-            self.BATCH_SIZE        = config_file.getint  ('Timing', 'batch_size',        fallback=self.BATCH_SIZE)
-            self.FORGE_MENU_SLEEP  = config_file.getfloat('Timing', 'forge_menu_sleep',  fallback=self.FORGE_MENU_SLEEP)
-            self.FORGE_READY_SLEEP = config_file.getfloat('Timing', 'forge_ready_sleep', fallback=self.FORGE_READY_SLEEP)
-            self.FOCUS_DELAY       = config_file.getfloat('Timing', 'focus_delay',       fallback=self.FOCUS_DELAY)
-            self.WARMUP_DELAY      = config_file.getfloat('Timing', 'warmup_delay',      fallback=self.WARMUP_DELAY)
-            self.SYNC_THRESHOLD    = config_file.getfloat('Timing', 'sync_threshold',    fallback=self.SYNC_THRESHOLD)
-            self.SYNC_TIMEOUT      = config_file.getfloat('Timing', 'sync_timeout',      fallback=self.SYNC_TIMEOUT)
-            self.POLL_INTERVAL     = config_file.getfloat('Timing', 'poll_interval',     fallback=self.POLL_INTERVAL)
-            self.EMPTY_READS_MAX   = config_file.getint  ('Timing', 'empty_reads_max',   fallback=self.EMPTY_READS_MAX)
-            self.MIN_TEXT_LEN      = config_file.getint  ('Timing', 'min_text_len',      fallback=self.MIN_TEXT_LEN)
+            self.KEY_INTERVAL      = config_file.getfloat('Timing', 'key_interval',       fallback=self.KEY_INTERVAL)
+            self.WAIT_ANIM         = config_file.getfloat('Timing', 'wait_anim',           fallback=self.WAIT_ANIM)
+            self.WAIT_ANIM_EXTRA   = config_file.getfloat('Timing', 'wait_anim_extra',     fallback=self.WAIT_ANIM_EXTRA)  # ← NEW
+            self.BATCH_SIZE        = config_file.getint  ('Timing', 'batch_size',          fallback=self.BATCH_SIZE)
+            self.FORGE_MENU_SLEEP  = config_file.getfloat('Timing', 'forge_menu_sleep',    fallback=self.FORGE_MENU_SLEEP)
+            self.FORGE_READY_SLEEP = config_file.getfloat('Timing', 'forge_ready_sleep',   fallback=self.FORGE_READY_SLEEP)
+            self.FOCUS_DELAY       = config_file.getfloat('Timing', 'focus_delay',         fallback=self.FOCUS_DELAY)
+            self.WARMUP_DELAY      = config_file.getfloat('Timing', 'warmup_delay',        fallback=self.WARMUP_DELAY)
+            self.SYNC_THRESHOLD    = config_file.getfloat('Timing', 'sync_threshold',      fallback=self.SYNC_THRESHOLD)
+            self.SYNC_TIMEOUT      = config_file.getfloat('Timing', 'sync_timeout',        fallback=self.SYNC_TIMEOUT)
+            self.POLL_INTERVAL     = config_file.getfloat('Timing', 'poll_interval',       fallback=self.POLL_INTERVAL)
+            self.EMPTY_READS_MAX   = config_file.getint  ('Timing', 'empty_reads_max',     fallback=self.EMPTY_READS_MAX)
+            self.MIN_TEXT_LEN      = config_file.getint  ('Timing', 'min_text_len',        fallback=self.MIN_TEXT_LEN)
 
         # --------------------------------------------------------------
         # [OCR] — PaddleOCR recognition language
@@ -206,7 +212,7 @@ class Config:
         if config_file.has_section('Keywords'):
             if self.KEYWORD_GROUPS is None:
                 groups = {}
-                items  = config_file.items('Keywords')
+                items = config_file.items('Keywords')
 
                 group_names = set()
                 for key, value in items:
@@ -220,10 +226,10 @@ class Config:
                     blacklist_key = f"{group_name}_blacklist"
 
                     if config_file.has_option('Keywords', a_key):
-                        a_str         = config_file.get('Keywords', a_key,         fallback='')
-                        b_str         = config_file.get('Keywords', b_key,         fallback='')
-                        min_val       = config_file.getint('Keywords', min_key,    fallback=1)
-                        blacklist_str = config_file.get('Keywords', blacklist_key, fallback='')
+                        a_str         = config_file.get ('Keywords', a_key,         fallback='')
+                        b_str         = config_file.get ('Keywords', b_key,         fallback='')
+                        min_val       = config_file.getint('Keywords', min_key,     fallback=1)
+                        blacklist_str = config_file.get ('Keywords', blacklist_key, fallback='')
 
                         a_list         = [fuzzy_clean_text(k.strip()) for k in a_str.split('||')         if k.strip()]
                         b_list         = [fuzzy_clean_text(k.strip()) for k in b_str.split('||')         if k.strip()]

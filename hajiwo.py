@@ -1014,8 +1014,8 @@ class ForgeBot:
                 pass
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             log_filename = f"hajiwo_log_{timestamp}.txt"
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            log_path = os.path.join(script_dir, log_filename)
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
+            log_path = os.path.join(log_dir, log_filename)
             self.stats.save_log(log_path)
     
     def debug_screenshot(self):

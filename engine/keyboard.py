@@ -28,7 +28,8 @@ class KeyboardController:
     _KEY_MAP = {
         'down': 'Down', 'up': 'Up', 'right': 'Right', 'left': 'Left',
         'enter': 'Return', 'return': 'Return', 'escape': 'Escape',
-        'esc': 'Escape', 'space': 'space', 'tab': 'Tab', 'f': 'f',
+        'esc': 'Escape', 'space': 'space', 'tab': 'Tab',
+        'f': 'f', 'f2': 'F2',
         '2': '2', '3': '3',
     }
 
@@ -131,17 +132,32 @@ class KeyboardController:
         """
         Execute the key sequence to open the forge menu and start a forging session.
 
-        The mid-sequence pause (between the 2nd and 3rd KEY_INTERACT) uses
-        cfg.FORGE_MENU_SLEEP (from [Timing] forge_menu_sleep).
-        The final wait uses cfg.WAIT_ANIM (from [Timing] wait_anim).
+        User has already chose the relic and set it to 10,
+        so we can directly start the forging process.
         """
         self._focus_game()
         self.press(self.cfg.KEY_INTERACT)
-        self.press(self.cfg.KEY_DOWN)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.FORGE_MENU_SLEEP)   # UI transition between submenu pages
+        time.sleep(self.cfg.WAIT_ANIM)
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
+
+    def forge_cycle_start(self):
+        """New forge sequence: F (open) -> F2 (choose 10 relics) -> F (confirm) -> F (confirm, skip animation)"""
+        self._focus_game()
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+        self.press(self.cfg.KEY_CHOSE_10_RELICS) 
+        time.sleep(self.cfg.WAIT_ANIM)
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+
+    def forge_cycle_end(self):
+        """Close the forge cycle after all relics processed."""
+        self._focus_game()
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM_EXTRA)
 
     def forge_end(self):
         """Confirm the end of a forging session and wait for the UI transition."""

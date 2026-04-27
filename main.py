@@ -182,54 +182,49 @@ class ForgeBot:
     # ==================== RUN_ROUND ====================
 
     def run_round(self) -> bool:
-        """Execute one full forge round: open menu → scan items → close menu."""
+        """Execute one fixed forge round:
+        F -> F2 -> F -> long wait -> process exactly BATCH_SIZE relics -> F
+        """
         self.stats.rounds += 1
         print(f"\n🔥 [ROUND {self.stats.rounds}]")
 
-        self.keyboard.forge_start()
-        time.sleep(self.cfg.FORGE_READY_SLEEP)   # Stabilise UI after forge_start()
-
-        actual_count = 0
-        prev_frame   = None
-        prev_text    = None
-
-        print("  [SYNC] Capture first item...")
-        keep, current_text, current_frame = self.process_item(1)
-
-        if not self.is_valid_ocr_text(current_text) or self.looks_like_action_menu(current_text):
-            print("  [ERROR] First item invalid → round failed")
-            self.keyboard.forge_end()
+        if self.stop_signal.should_stop():
             return False
 
-        actual_count = 1
-        prev_frame   = current_frame
-        prev_text    = current_text
-        print("  [OK] Item 1 processed ✓")
+        # 1) Open forge flow (F -> F2 -> F -> 4s wait)
+        print("  [FLOW] Open forge cycle")
+        self.keyboard.forge_cycle_start()
 
-        while actual_count < self.cfg.BATCH_SIZE:
+        # 2) Process exactly BATCH_SIZE relics
+        processed_count = 0
+
+        for item_idx in range(1, self.cfg.BATCH_SIZE + 1):
             if self.stop_signal.should_stop():
                 return False
 
-            item_idx = actual_count + 1
-            print(f"\n  [SYNC] Item {actual_count} → wait {item_idx}...")
+            print(f"\n  [FLOW] Processing relic {item_idx}/{self.cfg.BATCH_SIZE}")
 
-            new_frame, new_text = self.wait_for_next_item(prev_frame, prev_text)
-            if new_frame is None or new_text is None:
-                print(f"  [END] List exhausted after {actual_count}")
-                break
+            keep, current_text, _ = self.process_item(item_idx)
 
-            keep, current_text, current_frame = self.process_item(item_idx, new_frame)
             if not self.is_valid_ocr_text(current_text):
-                print(f"  [ERROR] Item {item_idx} invalid after sync")
+                print(f"  [ERROR] Item {item_idx} OCR invalid -> stop round")
                 break
 
-            actual_count += 1
-            prev_frame    = current_frame
-            prev_text     = current_text
+            processed_count += 1
 
-        print(f"  🎯 FINAL Batch: {actual_count} relics processed")
-        self.keyboard.forge_end()
-        return actual_count > 0
+            if item_idx < self.cfg.BATCH_SIZE:
+                time.sleep(self.cfg.KEY_INTERVAL)
+
+        # 3) Close cycle
+        print(f"\n  🎯 FINAL Batch: {processed_count}/{self.cfg.BATCH_SIZE} relics processed")
+
+        if self.stop_signal.should_stop():
+            return False
+
+        print("  [FLOW] Close forge cycle")
+        self.keyboard.forge_cycle_end()
+
+        return processed_count == self.cfg.BATCH_SIZE
 
     # ==================== RUN ====================
 
@@ -328,7 +323,7 @@ class ForgeBot:
                 pass
             timestamp    = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             log_filename = f"hajiwo_log_{timestamp}.txt"
-            script_dir   = os.path.dirname(os.path.abspath(__file__))
+            script_dir   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
             log_path     = os.path.join(script_dir, log_filename)
             self.stats.save_log(log_path)
 

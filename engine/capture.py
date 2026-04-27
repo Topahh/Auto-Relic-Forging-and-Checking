@@ -1,69 +1,50 @@
-# engine/capture.py
-# Screen capture module for Wayland environments.
-# Spawns a persistent wayland_capture_helper.py subprocess and communicates
-# with it over stdin/stdout to request full-screen PNG snapshots.
-# Supports optional calibration cropping and saves debug images to disk.
-
-
 import os
 import cv2
 import datetime
-import tempfile
 import subprocess
+import tempfile
 import numpy as np
+from PIL import Image
 
+# ---------------------------------------------------------------------------
+# Internal helper
+# ---------------------------------------------------------------------------
 
-# ------------------------------------------------------------------
-# Helper I/O
-# ------------------------------------------------------------------
-
-
-def _readline_with_timeout(pipe, timeout=45):
-    """
-    Read one line from a pipe with a hard timeout.
-
-    Runs the blocking readline() in a daemon thread.
-    Raises TimeoutError if no response arrives within `timeout` seconds.
-    """
-    import threading
-
-    result = {"line": None, "error": None}
-
-    def _target():
-        try:
-            result["line"] = pipe.readline()
-        except Exception as e:
-            result["error"] = e
-
-    t = threading.Thread(target=_target, daemon=True)
-    t.start()
-    t.join(timeout)
-
-    if t.is_alive():
-        raise TimeoutError("Timed out waiting for helper response")
-
-    if result["error"] is not None:
-        raise result["error"]
-
-    return result["line"]
-
-
-# ------------------------------------------------------------------
-# Screen capture
-# ------------------------------------------------------------------
+def _readline_with_timeout(stream, timeout: float = 20.0) -> str:
+    """Read one line from *stream* with a wall-clock timeout."""
+    import select
+    ready, _, _ = select.select([stream], [], [], timeout)
+    if not ready:
+        raise RuntimeError(f"[ERROR] Helper did not respond within {timeout}s")
+    return stream.readline()
 
 
 class ScreenCapture:
-    def __init__(self, region=None):
+    def __init__(self, region=None, debug_mode: bool = False):
+        """
+        Parameters
+        ----------
+        region      : kept for backward compatibility (unused internally —
+                      use set_calibration() or set_region_xywh() instead).
+        debug_mode  : when True, capture() saves full+crop PNGs to debug_dir.
+                      Off by default — avoids disk I/O during normal OCR polling.
+        """
         self.region       = region
+        self.debug_mode   = debug_mode
         self.helper       = None
         self.helper_path  = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "wayland_capture_helper.py"
         )
-        self.debug_dir    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
+        self.debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
         os.makedirs(self.debug_dir, exist_ok=True)
-        self._calibration = None
+        self._calibration = None          # ← ICI, avant le if
+        if region is not None:
+            if len(region) == 4:
+                self.set_calibration(*region)
+            else:
+                raise ValueError(f"[ERROR] Invalid region format: {region}")
+
 
     # ------------------------------------------------------------------
     # Helper process management
@@ -103,16 +84,20 @@ class ScreenCapture:
                 f"Response: {line!r}. stderr: {stderr}"
             )
 
+
     # ------------------------------------------------------------------
-    # Capture
+    # Raw full-screen capture  (BGR numpy array — Wayland-safe)
     # ------------------------------------------------------------------
 
     def capture_full(self) -> np.ndarray:
         """
-        Request a full-screen capture from the helper and return it as a BGR numpy array.
+        Request a full-screen capture from the helper and return it as a
+        BGR numpy array.  The region is NEVER passed to the helper — this
+        is intentional: Wayland region captures are unreliable across
+        compositors.  Cropping is always done in Python (see grab/capture).
 
-        The helper writes a PNG to a temporary file; this method reads it with OpenCV
-        and deletes the temporary file before returning.
+        The helper writes a PNG to a temporary file; this method reads it
+        with OpenCV and deletes the temporary file before returning.
         """
         self._ensure_helper()
 
@@ -138,27 +123,43 @@ class ScreenCapture:
             except Exception:
                 pass
 
+
     # ------------------------------------------------------------------
     # Calibration
     # ------------------------------------------------------------------
 
     def set_calibration(self, left: int, top: int, width: int, height: int):
-        """Store the crop region used by capture()."""
+        """Store the popup crop region as (left, top, width, height)."""
         self._calibration = (left, top, width, height)
+
+    def set_region_xywh(self, x: int, y: int, w: int, h: int):
+        """Alias of set_calibration() — preferred for readability."""
+        self._calibration = (x, y, w, h)
+
+    def clear_calibration(self):
+        """Remove the crop region — grab() will return the full frame."""
+        self._calibration = None
+
+
+    # ------------------------------------------------------------------
+    # Cropped numpy capture  (internal / legacy)
+    # ------------------------------------------------------------------
 
     def capture(self) -> np.ndarray:
         """
-        Return a cropped screen region based on the stored calibration.
+        Full-screen capture then optional crop.  Returns a BGR numpy array.
 
-        If no calibration is set, returns the full-screen image.
-        Both the full frame and the cropped region are saved to debug_dir
-        with a timestamp-based filename for inspection.
+        Debug files (full_*.png / crop_*.png) are written to debug_dir ONLY
+        when debug_mode=True, so normal OCR polling never hits the disk.
 
-        Raises RuntimeError if the calibration rectangle falls outside the image.
+        Raises RuntimeError if the calibration rectangle is out of bounds.
         """
         img = self.capture_full()
 
         if self._calibration is None:
+            if self.debug_mode:
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                cv2.imwrite(os.path.join(self.debug_dir, f"full_{ts}.png"), img)
             return img
 
         left, top, width, height = self._calibration
@@ -177,11 +178,88 @@ class ScreenCapture:
 
         crop = img[y1:y2, x1:x2]
 
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        cv2.imwrite(os.path.join(self.debug_dir, f"full_{ts}.png"), img)
-        cv2.imwrite(os.path.join(self.debug_dir, f"crop_{ts}.png"), crop)
+        if self.debug_mode:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            cv2.imwrite(os.path.join(self.debug_dir, f"full_{ts}.png"), img)
+            cv2.imwrite(os.path.join(self.debug_dir, f"crop_{ts}.png"), crop)
 
         return crop
+
+
+    # ------------------------------------------------------------------
+    # PIL helpers  (used by OCREngine and the guard loop)
+    # ------------------------------------------------------------------
+
+    def grab(self) -> Image.Image:
+        """
+        Main method for OCR consumption.
+
+        Captures the full screen via Wayland, crops to the calibrated popup
+        region (if set), then converts BGR → RGB → PIL Image.
+
+        No files are written.  Safe to call in tight polling loops.
+        """
+        img_bgr = self.capture_full()
+
+        if self._calibration is not None:
+            left, top, width, height = self._calibration
+            h, w = img_bgr.shape[:2]
+            x1 = max(0, left)
+            y1 = max(0, top)
+            x2 = min(w, left + width)
+            y2 = min(h, top + height)
+            if x1 < x2 and y1 < y2:
+                img_bgr = img_bgr[y1:y2, x1:x2]
+
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(img_rgb)
+
+    def grab_full(self) -> Image.Image:
+        """
+        Full-screen capture without any cropping, returned as a PIL Image.
+
+        Use this for calibration debug: save the result, open it in a viewer,
+        find the popup coordinates, then call set_calibration().
+
+            cap.grab_full().save("/tmp/hajiwo_fullscreen.png")
+        """
+        img_bgr = self.capture_full()
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(img_rgb)
+
+
+    # ------------------------------------------------------------------
+    # On-demand debug snapshot  (call explicitly, not automatically)
+    # ------------------------------------------------------------------
+
+    def save_debug_snapshot(self, label: str = "debug"):
+        """
+        Manually save a full+crop PNG pair to debug_dir.
+
+        Call this from run_round() or process_item() when you want a one-off
+        snapshot without enabling debug_mode globally.
+
+            self.capture.save_debug_snapshot("after_forge_start")
+            self.capture.save_debug_snapshot(f"before_item_{item_idx}")
+        """
+        img_bgr = self.capture_full()
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+        full_path = os.path.join(self.debug_dir, f"full_{label}_{ts}.png")
+        cv2.imwrite(full_path, img_bgr)
+
+        if self._calibration is not None:
+            left, top, width, height = self._calibration
+            h, w = img_bgr.shape[:2]
+            x1, y1 = max(0, left), max(0, top)
+            x2, y2 = min(w, left + width), min(h, top + height)
+            if x1 < x2 and y1 < y2:
+                crop = img_bgr[y1:y2, x1:x2]
+                crop_path = os.path.join(self.debug_dir, f"crop_{label}_{ts}.png")
+                cv2.imwrite(crop_path, crop)
+
+        return full_path
+
 
     # ------------------------------------------------------------------
     # Cleanup
