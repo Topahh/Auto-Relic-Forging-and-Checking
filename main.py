@@ -27,11 +27,12 @@ class ForgeBot:
         self.keyboard = KeyboardController(self.cfg)
         self.matcher  = ItemMatcher(self.cfg)
         self.capture  = ScreenCapture(self.cfg.SCAN_REGION)
-        self.debug_save_capture_series("before_round")
+        # self.debug_save_capture_series("before_round")
         self.stats       = Statistics(self.cfg.lang)
         self.stop_signal = StopSignal(self.cfg.lang)
         self.stop_signal.clear()
         self.locker = None
+        self.first_round = True
         # All sync / timing parameters come from self.cfg (hajiwo.ini [Timing])
         # No hardcoded _sync_* attributes here.
 
@@ -46,6 +47,20 @@ class ForgeBot:
             return True
         t = text.lower()
         return any(tok in t for tok in self.cfg.RELIC_TOKENS)
+    
+    def is_flatstone_menu(self, text: str) -> bool:
+        if not self.cfg.FLATSTONE_TOKENS:
+            return False
+        t = text.lower()
+        hits = sum(1 for tok in self.cfg.FLATSTONE_TOKENS if tok in t)
+        return hits >= 2
+
+    def capture_text(self) -> Tuple[np.ndarray, list, str]:
+        image = self.capture.capture()
+        texts = self.ocr.recognize(image)
+        cleaned = [fuzzy_clean_text(t) for t in texts]
+        recognized = "".join(cleaned)
+        return image, texts, recognized
 
     def frame_has_changed(self, prev_frame: np.ndarray, new_frame: np.ndarray,
                           threshold: float = None) -> bool:
@@ -123,36 +138,61 @@ class ForgeBot:
     # ==================== PROCESS_ITEM ====================
 
     def process_item(self, index: int, image: np.ndarray = None) -> Tuple[bool, str, np.ndarray]:
-        """Process one item: OCR → match → keep/discard.
-        Accepts an already-validated frame or captures a new one."""
-        if image is None:
-            image = self.capture.capture()
+        """
+        Process one item: OCR -> validate UI -> match -> keep/discard.
+        Special handling for flatstone menu on item 1.
+        """
+        max_retries = 4
 
-        dummy_text = "".join([fuzzy_clean_text(t) for t in self.ocr.recognize(image)])
-        if not self.is_relic_menu(dummy_text):
-            print(f" [{index:2d}] [WRONG UI] Relic menu not detected")
-            return False, "", image
+        for attempt in range(1, max_retries + 1):
+            if self.stop_signal.should_stop():
+                return False, "", image
 
-        texts         = self.ocr.recognize(image)
-        cleaned_texts = [fuzzy_clean_text(t) for t in texts]
-        recognized    = "".join(cleaned_texts)
-        print(f"  [{index:2d}] OCR: '{recognized}' (len={len(recognized)})")
+            if image is None:
+                image, texts, recognized = self.capture_text()
+            else:
+                texts = self.ocr.recognize(image)
+                recognized = "".join([fuzzy_clean_text(t) for t in texts])
 
-        keep, info, matched_kw, blacklist_kw, has_a, group_name = self.matcher.match(texts)
-        self.stats.scanned += 1
+            print(f" [{index:2d}] [OCR DEBUG] attempt {attempt}/{max_retries} -> '{recognized}' | raw={texts}")
 
-        if keep:
-            self.stats.kept += 1
-            self.stats.add_kept_item(texts, matched_kw, group_name)
-            print(f"  [{index:2d}] ★ KEEP - {info}")
-            self.keyboard.keep_item()
-        else:
-            print(f"  [{index:2d}] ✗ DISCARD - {info}")
-            if has_a and blacklist_kw:
-                self.stats.add_qualified_blacklisted(texts, matched_kw, blacklist_kw)
-            self.keyboard.discard_item()
+            if index == 1 and self.is_flatstone_menu(recognized):
+                print(f" [{index:2d}] [FLATSTONE] detected -> enter relic menu")
+                self.keyboard.press(self.cfg.KEY_INTERACT)
+                time.sleep(self.cfg.WAIT_ANIM)
+                image = None
+                continue
 
-        return keep, recognized, image
+            if not self.is_relic_menu(recognized):
+                print(f" [{index:2d}] [WRONG UI] attempt {attempt}/{max_retries} -> '{recognized}'")
+                time.sleep(self.cfg.POLL_INTERVAL)
+                image = None
+                continue
+
+            print(f" [{index:2d}] OCR: '{recognized}' (len={len(recognized)})")
+
+            keep, info, matched_kw, blacklist_kw, has_a, group_name = self.matcher.match(texts)
+            self.stats.scanned += 1
+
+            if keep:
+                self.stats.kept += 1
+                self.stats.add_kept_item(texts, matched_kw, group_name)
+                print(f" [{index:2d}] ★ KEEP - {info} [KEY={self.cfg.KEY_KEEP}]")
+                self.keyboard.keep_item()
+            else:
+                print(f" [{index:2d}] ✗ DISCARD - {info} [KEY={self.cfg.KEY_DISCARD}]")
+                if has_a and blacklist_kw:
+                    self.stats.add_qualified_blacklisted(texts, matched_kw, blacklist_kw)
+                self.keyboard.discard_item()
+
+            if index < self.cfg.BATCH_SIZE:
+                print(f" [{index:2d}] [SYNC] waiting UI transition to next relic...")
+                time.sleep(max(self.cfg.KEY_INTERVAL, self.cfg.POLL_INTERVAL) * 2)
+
+            return keep, recognized, image
+
+        print(f" [{index:2d}] [ERROR] UI not recovered")
+        return False, "", image
 
     def debug_save_capture_series(self, prefix="series", count=5, delay=0.5):
         """Save several consecutive captures to verify helper output."""
@@ -185,10 +225,13 @@ class ForgeBot:
             time.sleep(delay)
 
     # ==================== RUN_ROUND ====================
-
+    
     def run_round(self) -> bool:
-        """Execute one fixed forge round:
-        F -> F2 -> F -> long wait -> process exactly BATCH_SIZE relics -> F
+        """
+        First round:
+            user already on flatstone -> F -> F -> process 10 relics
+        Next rounds:
+            after previous batch -> F -> F -> F2 -> F -> F -> process 10 relics
         """
         self.stats.rounds += 1
         print(f"\n🔥 [ROUND {self.stats.rounds}]")
@@ -196,39 +239,33 @@ class ForgeBot:
         if self.stop_signal.should_stop():
             return False
 
-        # 1) Open forge flow (F -> F2 -> F -> 4s wait)
-        print("  [FLOW] Open forge cycle")
-        self.keyboard.forge_cycle_start()
+        if self.first_round:
+            print(" [FLOW] First round: flatstone -> relic menu")
+            self.keyboard.enter_relic_menu_from_flatstone()
+            self.first_round = False
+        else:
+            print(" [FLOW] Next round: after batch -> flatstone -> relic menu")
+            self.keyboard.prepare_next_round_from_after_batch()
 
-        # 2) Process exactly BATCH_SIZE relics
+        print(" [FLOW] Waiting relic menu fully loaded...")
+        time.sleep(self.cfg.WAIT_ANIM_EXTRA)
+
         processed_count = 0
 
         for item_idx in range(1, self.cfg.BATCH_SIZE + 1):
             if self.stop_signal.should_stop():
                 return False
 
-            print(f"\n  [FLOW] Processing relic {item_idx}/{self.cfg.BATCH_SIZE}")
-
+            print(f"\n [FLOW] Processing relic {item_idx}/{self.cfg.BATCH_SIZE}")
             keep, current_text, _ = self.process_item(item_idx)
 
-            if not self.is_valid_ocr_text(current_text):
-                print(f"  [ERROR] Item {item_idx} OCR invalid -> stop round")
+            if not current_text:
+                print(f" [ERROR] Item {item_idx} UI/OCR recovery failed -> stop round")
                 break
 
             processed_count += 1
 
-            if item_idx < self.cfg.BATCH_SIZE:
-                time.sleep(self.cfg.KEY_INTERVAL)
-
-        # 3) Close cycle
-        print(f"\n  🎯 FINAL Batch: {processed_count}/{self.cfg.BATCH_SIZE} relics processed")
-
-        if self.stop_signal.should_stop():
-            return False
-
-        print("  [FLOW] Close forge cycle")
-        self.keyboard.forge_cycle_end()
-
+        print(f"\n 🎯 FINAL Batch: {processed_count}/{self.cfg.BATCH_SIZE} relics processed")
         return processed_count == self.cfg.BATCH_SIZE
 
     # ==================== RUN ====================

@@ -128,7 +128,7 @@ class Config:
     BATCH_SIZE:   int   = 10
 
     # Extended keyboard timing
-    WAIT_ANIM_EXTRA:   float = 4.0    # ← NEW — long wait into relic scroll mode
+    WAIT_ANIM_EXTRA:   float = 7.0    # ← NEW — long wait into relic scroll mode
     FORGE_MENU_SLEEP:  float = 0.50   # Mid-sequence inside forge_start()
     FORGE_READY_SLEEP: float = 0.50   # After forge_start() in run_round()
     FOCUS_DELAY:       float = 0.05   # After windowfocus in _focus_game()
@@ -256,12 +256,15 @@ class Config:
                 self.KEYWORD_GROUPS = {}
 
         # --------------------------------------------------------------
-        # [RelicMenu] — tokens for relic selection menu
+        # [RelicMenu] — tokens for relic selection menu / flatstone menu
         # --------------------------------------------------------------
         if config_file.has_section('RelicMenu'):
-            raw_tokens = config_file.get('RelicMenu', 'relic_tokens', fallback='')
-            self.RELIC_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_tokens.split(',') if t.strip()]
+            raw_relic_tokens = config_file.get('RelicMenu', 'relic_tokens', fallback='')
+            self.RELIC_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_relic_tokens.split(',') if t.strip()]
+
+            raw_flatstone_tokens = config_file.get('RelicMenu', 'flatstone_tokens', fallback='')
+            self.FLATSTONE_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_flatstone_tokens.split(',') if t.strip()]
         else:
             self.RELIC_TOKENS = []
-
+            self.FLATSTONE_TOKENS = []
 # endregion

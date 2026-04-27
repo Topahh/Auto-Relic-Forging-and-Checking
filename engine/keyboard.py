@@ -122,7 +122,6 @@ class KeyboardController:
     def keep_item(self):
         """Press the keep key then navigate right to confirm."""
         self.press(self.cfg.KEY_KEEP)
-        self.press(self.cfg.KEY_RIGHT)
 
     def discard_item(self):
         """Press the discard key."""
@@ -136,6 +135,35 @@ class KeyboardController:
         so we can directly start the forging process.
         """
         self._focus_game()
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+
+    def enter_relic_menu_from_flatstone(self):
+        """Already on flatstone menu: F to enter relic menu, F to skip animation."""
+        self._focus_game()
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+        self.press(self.cfg.KEY_INTERACT)
+        # time.sleep(self.cfg.WAIT_ANIM_EXTRA)
+
+    def prepare_next_round_from_after_batch(self):
+        """
+        After 10 relics:
+        F -> return to main
+        F -> open flatstone
+        F2 -> set 10
+        F -> enter relic menu
+        F -> skip animation
+        """
+        self._focus_game()
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+        self.press(self.cfg.KEY_INTERACT)
+        time.sleep(self.cfg.WAIT_ANIM)
+        self.press(self.cfg.KEY_CHOSE_10_RELICS)
+        time.sleep(self.cfg.WAIT_ANIM)
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
         self.press(self.cfg.KEY_INTERACT)
