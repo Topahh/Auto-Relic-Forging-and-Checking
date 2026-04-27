@@ -12,7 +12,7 @@ from engine.ocr import OCREngine
 from engine.keyboard import KeyboardController
 from engine.capture import ScreenCapture
 from engine.matcher import ItemMatcher
-from engine.locker import CurrencyLocker
+# from engine.locker import CurrencyLocker
 from utils.text import fuzzy_clean_text, natural_sort_key
 from utils.stats import Statistics
 from utils.signal import StopSignal
@@ -382,6 +382,6 @@ if __name__ == "__main__":
         else:
             print("程序执行完毕")
         print("="*50)
-        input("程序执行完毕 / Program completed. Press Enter to exit...")
+        input("Program completed. Press Enter to exit...")
 
 #endregion

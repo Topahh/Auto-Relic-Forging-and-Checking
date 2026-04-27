@@ -1,50 +1,89 @@
- # engine/keyboard.py
+# engine/keyboard.py
+# Keyboard input controller for X11 / Wayland (XWayland) environments.
+# Uses xdotool to send keystrokes to the game window identified by its title.
+# Requires xdotool to be installed: sudo dnf install xdotool
+
 
 import os
 import time
 import subprocess
 
 
-# region 
-# Remplacer KeyboardController entièrement
+from config.settings import Config
+
+
+# ------------------------------------------------------------------
+# Keyboard controller
+# ------------------------------------------------------------------
+
+
 class KeyboardController:
+    """
+    Sends keystrokes to the game window using xdotool.
+
+    On startup, verifies that xdotool is available and resolves the game
+    window ID by title. All key presses are routed to that window to avoid
+    focus side-effects on other applications.
+
+    Key names are normalized through _KEY_MAP before being passed to xdotool.
+    """
+
     _KEY_MAP = {
-        'down': 'Down', 'up': 'Up', 'right': 'Right', 'left': 'Left',
-        'enter': 'Return', 'return': 'Return', 'escape': 'Escape',
-        'esc': 'Escape', 'space': 'space', 'tab': 'Tab', 'f': 'f',
-        '2': '2', '3': '3',
+        'down':   'Down',   'up':     'Up',      'right': 'Right', 'left': 'Left',
+        'enter':  'Return', 'return': 'Return',  'escape': 'Escape',
+        'esc':    'Escape', 'space':  'space',   'tab':   'Tab',   'f': 'f',
+        '2':      '2',      '3':      '3',
     }
 
     def __init__(self, cfg: Config):
-        self.cfg = cfg
-        self._env = {**os.environ, 'DISPLAY': ':0'}
+        self.cfg        = cfg
+        self._env       = {**os.environ, 'DISPLAY': ':0'}
         self._window_id = None
         self._verify_and_find_window()
 
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+
     def _verify_and_find_window(self):
+        """
+        Check that xdotool is installed, then locate the game window by title.
+
+        Stores the window ID in self._window_id for use by _focus_game().
+        Prints a warning if the window cannot be found — inputs may still work
+        if the game window happens to have focus.
+        """
         r = subprocess.run(['which', 'xdotool'], capture_output=True)
         if r.returncode != 0:
-            print("[ERREUR] xdotool introuvable : sudo dnf install xdotool")
+            print("[ERROR] xdotool not found — install it with: sudo dnf install xdotool")
             return
-        print("[OK] xdotool détecté")
+        print("[OK] xdotool detected")
 
-        # Cherche la fenêtre du jeu
+        # Search for the game window by its title
         r = subprocess.run(
             ['xdotool', 'search', '--name', 'ELDEN RING NIGHTREIGN'],
             capture_output=True, text=True, env=self._env
         )
         if r.returncode == 0 and r.stdout.strip():
             self._window_id = r.stdout.strip().split('\n')[0]
-            print(f"[OK] Fenêtre jeu trouvée : ID {self._window_id}")
+            print(f"[OK] Game window found — ID {self._window_id}")
         else:
-            print("[WARN] Fenêtre jeu non trouvée — les inputs peuvent échouer")
+            print("[WARN] Game window not found — inputs may fail")
+
+    # ------------------------------------------------------------------
+    # Focus & warmup
+    # ------------------------------------------------------------------
 
     def warmup_permissions(self):
-        """Déclenche tôt la première interaction clavier/focus."""
+        """
+        Trigger an early focus + harmless keypress to initialize input permissions.
+
+        Call this once at startup before the main loop begins.
+        """
         self._focus_game()
         time.sleep(0.2)
 
-        # touche inoffensive pour déclencher l'autorisation / initialisation
+        # Harmless keypress to trigger permission / driver initialization
         subprocess.run(
             ['xdotool', 'key', '--clearmodifiers', 'Shift_L'],
             env=self._env, capture_output=True
@@ -52,7 +91,7 @@ class KeyboardController:
         time.sleep(0.2)
 
     def _focus_game(self):
-        """Focus la fenêtre du jeu avant d'envoyer des inputs"""
+        """Focus the game window before sending any input."""
         if self._window_id:
             subprocess.run(
                 ['xdotool', 'windowfocus', '--sync', self._window_id],
@@ -60,7 +99,17 @@ class KeyboardController:
             )
             time.sleep(0.05)
 
+    # ------------------------------------------------------------------
+    # Key press primitives
+    # ------------------------------------------------------------------
+
     def press(self, key: str, delay: float = None):
+        """
+        Send a single keystroke to the game via xdotool.
+
+        The key name is normalized through _KEY_MAP. If no explicit delay is
+        provided, falls back to cfg.KEY_INTERVAL.
+        """
         xkey = self._KEY_MAP.get(key.lower(), key)
         subprocess.run(
             ['xdotool', 'key', '--clearmodifiers', xkey],
@@ -68,29 +117,53 @@ class KeyboardController:
         )
         time.sleep(delay or self.cfg.KEY_INTERVAL)
 
+    # ------------------------------------------------------------------
+    # Game actions
+    # ------------------------------------------------------------------
+
     def keep_item(self):
+        """Press the keep key then navigate right to confirm."""
         self.press(self.cfg.KEY_KEEP)
         self.press(self.cfg.KEY_RIGHT)
 
     def discard_item(self):
+        """Press the discard key."""
         self.press(self.cfg.KEY_DISCARD)
 
     def forge_start(self):
-        self._focus_game()           # focus AVANT les inputs
+        """
+        Execute the key sequence to open the forge menu and start a forging session.
+
+        Focuses the game window first, then navigates through the menu.
+        The 0.5s sleep accounts for the UI transition animation.
+        """
+        self._focus_game()                    # Focus before sending any input
         self.press(self.cfg.KEY_INTERACT)
         self.press(self.cfg.KEY_DOWN)
         self.press(self.cfg.KEY_INTERACT)
-        time.sleep(0.5)              # augmenté de 0.2 à 0.5
+        time.sleep(0.5)                       # Increased from 0.2 to 0.5 for slower screens
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
 
     def forge_end(self):
+        """Confirm the end of a forging session and wait for the UI transition."""
         self._focus_game()
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
 
 
+# ------------------------------------------------------------------
+# Helper I/O (shared utility)
+# ------------------------------------------------------------------
+
+
 def _readline_with_timeout(pipe, timeout=45):
+    """
+    Read one line from a pipe with a hard timeout.
+
+    Runs the blocking readline() in a daemon thread.
+    Raises TimeoutError if no response arrives within `timeout` seconds.
+    """
     import threading
 
     result = {"line": None, "error": None}
@@ -106,11 +179,9 @@ def _readline_with_timeout(pipe, timeout=45):
     t.join(timeout)
 
     if t.is_alive():
-        raise TimeoutError("Timeout while waiting helper response")
+        raise TimeoutError("Timed out waiting for helper response")
 
     if result["error"] is not None:
         raise result["error"]
 
     return result["line"]
-
-# endregion
