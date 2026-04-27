@@ -76,6 +76,7 @@ class Config:
     - [Timing]      : all timing and sync parameters
     - [OCR]         : PaddleOCR recognition language
     - [Keywords]    : relic keyword groups
+    - [RelicMenu]   : tokens for relic selection menu
 
     Key bindings:
     - KEY_INTERACT          : interact / confirm
@@ -107,10 +108,11 @@ class Config:
     """
 
     # Screen
-    SCAN_REGION: Tuple[int, int, int, int] = (668, 608, 736, 243)
+    SCAN_REGION: Tuple[int, int, int, int] = (626, 576, 744, 318)
 
     # Keywords
     KEYWORD_GROUPS: dict = None
+    RELIC_TOKENS: list = None
 
     # Controls
     KEY_INTERACT:        str = "f"
@@ -158,7 +160,7 @@ class Config:
         # --------------------------------------------------------------
         # [General] — UI language
         # --------------------------------------------------------------
-        lang_code = config_file.get('General', 'language', fallback='zh')
+        lang_code = config_file.get('General', 'language', fallback='en')
         self.lang = Language(config_file, lang_code)
 
         # --------------------------------------------------------------
@@ -252,5 +254,14 @@ class Config:
         else:
             if self.KEYWORD_GROUPS is None:
                 self.KEYWORD_GROUPS = {}
+
+        # --------------------------------------------------------------
+        # [RelicMenu] — tokens for relic selection menu
+        # --------------------------------------------------------------
+        if config_file.has_section('RelicMenu'):
+            raw_tokens = config_file.get('RelicMenu', 'relic_tokens', fallback='')
+            self.RELIC_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_tokens.split(',') if t.strip()]
+        else:
+            self.RELIC_TOKENS = []
 
 # endregion

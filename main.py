@@ -37,10 +37,15 @@ class ForgeBot:
 
     # ==================== SYNCHRONIZATION ====================
 
-    def looks_like_action_menu(self, text: str) -> bool:
-        """Detect 'favorites/sell' menus instead of relics."""
-        bad_tokens = ["add", "remove", "favorites", "sellnow", "3sell"]
-        return sum(1 for tok in bad_tokens if tok in text.lower()) >= 1
+    def is_relic_menu(self, text: str) -> bool:
+        """
+        Returns true if the given text contains any of the 
+        relic menu tokens configured in self.cfg.RELIC_TOKENS.
+        """
+        if not self.cfg.RELIC_TOKENS:
+            return True
+        t = text.lower()
+        return any(tok in t for tok in self.cfg.RELIC_TOKENS)
 
     def frame_has_changed(self, prev_frame: np.ndarray, new_frame: np.ndarray,
                           threshold: float = None) -> bool:
@@ -124,8 +129,8 @@ class ForgeBot:
             image = self.capture.capture()
 
         dummy_text = "".join([fuzzy_clean_text(t) for t in self.ocr.recognize(image)])
-        if self.looks_like_action_menu(dummy_text):
-            print(f"  [{index:2d}] [WRONG UI] Action menu detected")
+        if not self.is_relic_menu(dummy_text):
+            print(f" [{index:2d}] [WRONG UI] Relic menu not detected")
             return False, "", image
 
         texts         = self.ocr.recognize(image)

@@ -38,7 +38,7 @@ class ScreenCapture:
         )
         self.debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
         os.makedirs(self.debug_dir, exist_ok=True)
-        self._calibration = None          # ← ICI, avant le if
+        self._calibration = None
         if region is not None:
             if len(region) == 4:
                 self.set_calibration(*region)
