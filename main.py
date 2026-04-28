@@ -39,6 +39,37 @@ class ForgeBot:
 
     # ==================== SYNCHRONIZATION ====================
 
+    def ensure_relic_menu(self, index: int, max_retries: int = 5) -> bool:
+        """
+        Bring the UI to a confirmed relic menu state before processing.
+        Returns True if relic menu is confirmed, False after exhausting retries.
+        """
+        for attempt in range(1, max_retries + 1):
+            _, texts, recognized = self.capture_text()
+            print(f" [{index:2d}] [ENSURE] attempt {attempt}/{max_retries} -> '{recognized}'")
+
+            if self.is_relic_menu(recognized):
+                return True
+
+            if self.is_flatstone_menu(recognized):
+                print(f" [{index:2d}] [ENSURE] flatstone -> enter relic menu")
+                self.keyboard.press(self.cfg.KEY_INTERACT)
+                time.sleep(self.cfg.WAIT_ANIM_EXTRA)
+                continue
+
+            if self.is_partial_relic_overlay(recognized):
+                print(f" [{index:2d}] [ENSURE] partial overlay -> press F to dismiss")
+                self.keyboard.press(self.cfg.KEY_INTERACT)
+                time.sleep(max(self.cfg.WAIT_ANIM, self.cfg.POLL_INTERVAL))
+                continue
+
+            # OCR vide ou unknown UI
+            print(f" [{index:2d}] [ENSURE] unknown/empty UI -> press F to recover")
+            self.keyboard.press(self.cfg.KEY_INTERACT)
+            time.sleep(max(self.cfg.WAIT_ANIM, self.cfg.POLL_INTERVAL))
+
+        return False
+
     def is_relic_menu(self, text: str) -> bool:
         """
         Returns true if the given text contains any of the 
@@ -55,6 +86,12 @@ class ForgeBot:
         t = text.lower()
         hits = sum(1 for tok in self.cfg.FLATSTONE_TOKENS if tok in t)
         return hits >= 2
+    
+    def is_partial_relic_overlay(self, text: str) -> bool:
+        t = text.lower()
+        return ("close" in t and "reset" in t and
+                "addremovefavorites" not in t and
+                "sellnow" not in t)
 
     def capture_text(self) -> Tuple[np.ndarray, list, str]:
         image = self.capture.capture()
@@ -136,64 +173,48 @@ class ForgeBot:
         print("  [SYNC] timeout → end of list")
         return None, None
 
+# endregion
+# region Processing item
     # ==================== PROCESS_ITEM ====================
 
-    def process_item(self, index: int, image: np.ndarray = None) -> Tuple[bool, str, np.ndarray]:
+    def process_item(self, index: int) -> Tuple[bool, str, np.ndarray]:
         """
-        Process one item: OCR -> validate UI -> match -> keep/discard.
-        Special handling for flatstone menu on item 1.
+        Ensure relic menu, then OCR -> match -> keep/discard.
+        Tracks partial matches (at least one primary keyword found but group not validated).
         """
-        max_retries = 4
+        if not self.ensure_relic_menu(index):
+            print(f" [{index:2d}] [ERROR] UI not recovered -> skip item")
+            return False, "", None
 
-        for attempt in range(1, max_retries + 1):
-            if self.stop_signal.should_stop():
-                return False, "", image
+        image, texts, recognized = self.capture_text()
+        print(f" [{index:2d}] OCR: '{recognized}' (len={len(recognized)})")
 
-            if image is None:
-                image, texts, recognized = self.capture_text()
-            else:
-                texts = self.ocr.recognize(image)
-                recognized = "".join([fuzzy_clean_text(t) for t in texts])
+        keep, info, matched_kw, blacklist_kw, has_partial, group_name = self.matcher.match(texts)
+        self.stats.scanned += 1
 
-            print(f" [{index:2d}] [OCR DEBUG] attempt {attempt}/{max_retries} -> '{recognized}' | raw={texts}")
+        if keep:
+            self.stats.kept += 1
+            self.stats.add_kept_item(texts, matched_kw, group_name)
+            print(f" [{index:2d}] ★ KEEP - {info} [KEY={self.cfg.KEY_KEEP}]")
+            self.keyboard.keep_item()
+        else:
+            print(f" [{index:2d}] ✗ DISCARD - {info} [KEY={self.cfg.KEY_DISCARD}]")
 
-            if index == 1 and self.is_flatstone_menu(recognized):
-                print(f" [{index:2d}] [FLATSTONE] detected -> enter relic menu")
-                self.keyboard.press(self.cfg.KEY_INTERACT)
-                time.sleep(self.cfg.WAIT_ANIM)
-                image = None
-                continue
+            if has_partial and blacklist_kw:
+                # Primary threshold met but vetoed by blacklist
+                self.stats.add_qualified_blacklisted(texts, matched_kw, blacklist_kw)
 
-            if not self.is_relic_menu(recognized):
-                print(f" [{index:2d}] [WRONG UI] attempt {attempt}/{max_retries} -> '{recognized}'")
-                time.sleep(self.cfg.POLL_INTERVAL)
-                image = None
-                continue
+            elif has_partial and not blacklist_kw:
+                # At least one primary keyword found but threshold or B condition not met
+                self.stats.add_partial_match(texts, matched_kw, info, group_name)
 
-            print(f" [{index:2d}] OCR: '{recognized}' (len={len(recognized)})")
+            self.keyboard.discard_item()
 
-            keep, info, matched_kw, blacklist_kw, has_a, group_name = self.matcher.match(texts)
-            self.stats.scanned += 1
+        if index < self.cfg.BATCH_SIZE:
+            print(f" [{index:2d}] [SYNC] waiting UI transition to next relic...")
+            time.sleep(max(self.cfg.KEY_INTERVAL, self.cfg.POLL_INTERVAL) * 2)
 
-            if keep:
-                self.stats.kept += 1
-                self.stats.add_kept_item(texts, matched_kw, group_name)
-                print(f" [{index:2d}] ★ KEEP - {info} [KEY={self.cfg.KEY_KEEP}]")
-                self.keyboard.keep_item()
-            else:
-                print(f" [{index:2d}] ✗ DISCARD - {info} [KEY={self.cfg.KEY_DISCARD}]")
-                if has_a and blacklist_kw:
-                    self.stats.add_qualified_blacklisted(texts, matched_kw, blacklist_kw)
-                self.keyboard.discard_item()
-
-            if index < self.cfg.BATCH_SIZE:
-                print(f" [{index:2d}] [SYNC] waiting UI transition to next relic...")
-                time.sleep(max(self.cfg.KEY_INTERVAL, self.cfg.POLL_INTERVAL) * 2)
-
-            return keep, recognized, image
-
-        print(f" [{index:2d}] [ERROR] UI not recovered")
-        return False, "", image
+        return keep, recognized, image
 
     def debug_save_capture_series(self, prefix="series", count=5, delay=0.5):
         """Save several consecutive captures to verify helper output."""
@@ -225,6 +246,8 @@ class ForgeBot:
             prev = img
             time.sleep(delay)
 
+#endregion
+# region Game actions
     # ==================== RUN_ROUND ====================
 
     def run_round(self) -> bool:
@@ -248,10 +271,8 @@ class ForgeBot:
             print(" [FLOW] Next round: after batch -> flatstone -> relic menu")
             self.keyboard.prepare_next_round_from_after_batch()
 
-        print(" [FLOW] Waiting relic menu fully loaded...")
-        time.sleep(self.cfg.WAIT_ANIM_EXTRA)
-
         processed_count = 0
+
         for item_idx in range(1, self.cfg.BATCH_SIZE + 1):
             if self.stop_signal.should_stop():
                 return False
@@ -264,11 +285,10 @@ class ForgeBot:
                 break
 
             processed_count += 1
-        
+
         if processed_count == self.cfg.BATCH_SIZE:
             print(" [FLOW] Exiting relic menu after batch...")
             self.keyboard.exit_relic_menu()
-            time.sleep(self.cfg.WAIT_ANIM_EXTRA)
 
         print(f"\n 🎯 FINAL Batch: {processed_count}/{self.cfg.BATCH_SIZE} relics processed")
         return processed_count == self.cfg.BATCH_SIZE
@@ -377,7 +397,7 @@ class ForgeBot:
     def debug_screenshot(self):
         img  = self.capture.capture()
         path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
+            os.path.dirname(os.path.abspath(__file__)), "debug_captures",
             f"debug_{datetime.datetime.now().strftime('%H%M%S')}.png"
         )
         cv2.imwrite(path, img)

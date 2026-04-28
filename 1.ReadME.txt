@@ -21,3 +21,24 @@ II. Dependency Online Installation
 3. Enter the following commands sequentially in the command line:
 python -m pip install pymem paddleocr opencv-python pyautogui pydirectinput keyboard
 python -m pip install paddlepaddle-gpu==3.2.2 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+
+
+project/
+├── main.py                         ← Point d'entrée, contient ForgeBot
+├── hajiwo.ini                      ← Config utilisateur (mots-clés, région écran, langue)
+├── wayland_capture_helper.py       ← Script externe : capture Wayland via ScreenCast (DBUS)
+├── config/
+│   ├── __init__.py
+│   └── settings.py                 ← Dataclass Config + chargement hajiwo.ini
+├── engine/
+│   ├── __init__.py
+│   ├── capture.py                  ← Classe ScreenCapture (subprocess vers wayland_capture_helper)
+│   ├── keyboard.py                 ← Classe KeyboardController (xdotool)
+│   ├── matcher.py                  ← Classe ItemMatcher (logique de matching mots-clés)
+│   ├── ocr.py                      ← Classe OCREngine (PaddleOCR, lang='en')
+│   └── locker.py                   ← Classe CurrencyLocker (pymem, Windows only, désactivé Linux)
+└── utils/
+    ├── __init__.py
+    ├── text.py                     ← fuzzy_clean_text(), natural_sort_key()
+    ├── stats.py                    ← Classe Statistics (rapport, log fichier)
+    └── signal.py                   ← Classe StopSignal (Event + fichier /tmp/hajiwo_stop)
