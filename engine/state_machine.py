@@ -80,7 +80,7 @@ class TickDecision:
     updates: Dict[str, Any] = field(default_factory=dict)
 
 # endregion
-# region State machine implementation
+# region definition and helper methods of the state machine
 
 class ForgeBotStateMachine:
     """
@@ -106,32 +106,6 @@ class ForgeBotStateMachine:
         self.min_text_len = min_text_len
         self.batch_size = batch_size
 
-    # Classify states based on token hits and text length
-
-    def _count_hits(self, text: str, tokens: list[str]) -> int:
-        if not text:
-            return 0
-        t = text.lower()
-        return sum(1 for tok in tokens if tok in t)
-
-    def detect_state(self, recognized_text: str, ctx: FlowContext) -> TickInput:
-        text = (recognized_text or "").strip().lower()
-
-        relic_hits = self._count_hits(text, self.relic_tokens)
-        flatstone_hits = self._count_hits(text, self.flatstone_tokens)
-        main_menu_hits = self._count_hits(text, self.main_menu_tokens)
-        reset_menu_hits = self._count_hits(text, self.reset_menu_tokens)
-
-        return TickInput(
-            recognized_text=text,
-            min_text_len=self.min_text_len,
-            relic_token_hits=relic_hits,
-            flatstone_token_hits=flatstone_hits,
-            main_menu_token_hits=main_menu_hits,
-            reset_token_hits=reset_menu_hits,
-        )
-
-# region menu classification rules
 
     def _menu_score(self, text: str, tokens: list[str]) -> int:
         if not text:
@@ -172,19 +146,45 @@ class ForgeBotStateMachine:
         # "1/10" devient "110"
         return "1010" in text
 
+    def _count_hits(self, text: str, tokens: list[str]) -> int:
+        if not text:
+            return 0
+        t = text.lower()
+        return sum(1 for tok in tokens if tok in t)
+
+#endregion
+# region menu classification rules
+
+    def detect_state(self, recognized_text: str, ctx: FlowContext) -> TickInput:
+        text = (recognized_text or "").strip().lower()
+
+        relic_hits = self._count_hits(text, self.relic_tokens)
+        flatstone_hits = self._count_hits(text, self.flatstone_tokens)
+        main_menu_hits = self._count_hits(text, self.main_menu_tokens)
+        reset_menu_hits = self._count_hits(text, self.reset_menu_tokens)
+
+        return TickInput(
+            recognized_text=text,
+            min_text_len=self.min_text_len,
+            relic_token_hits=relic_hits,
+            flatstone_token_hits=flatstone_hits,
+            main_menu_token_hits=main_menu_hits,
+            reset_token_hits=reset_menu_hits,
+        )
+
     def classify_state(self, tick: TickInput, ctx: FlowContext) -> UIState:
         text = tick.recognized_text
 
-        if not text or len(text) < tick.min_text_len: # Si le texte est trop court, on se fie aux états de transition ou de reset
+        relic_hits = tick.relic_token_hits
+        flatstone_hits = tick.flatstone_token_hits
+        main_hits = tick.main_menu_token_hits
+
+        if not text or len(text) < tick.min_text_len:
             if ctx.transition_started:
                 return UIState.TRANSITION
             if tick.reset_token_hits >= 1:
                 return UIState.RESET_MENU
             return UIState.UNKNOWN
-
-        relic_hits = tick.relic_token_hits
-        flatstone_hits = tick.flatstone_token_hits
-        main_hits = tick.main_menu_token_hits
 
         if relic_hits >= 2 and relic_hits > flatstone_hits and relic_hits > main_hits:
             return UIState.RELIC_MENU
@@ -192,16 +192,28 @@ class ForgeBotStateMachine:
         if flatstone_hits >= 2 and flatstone_hits > relic_hits and flatstone_hits > main_hits:
             return UIState.FLATSTONE_MENU
 
-        if main_hits >= 1 and relic_hits < 2 and flatstone_hits < 2:
-            return UIState.MAIN_MENU
+        if ctx.processed_relics >= ctx.batch_size:
+            # Si batch complet, et on ne voit pas de reliques/flatstone, même un main_hits faible suffit
+            if main_hits >= 1 and relic_hits < 2 and flatstone_hits < 2:
+                return UIState.MAIN_MENU
+            # Si aucun token relique/flatstone, et même pas de main, on favorise MAIN_MENU après sortie
+            if relic_hits < 2 and flatstone_hits < 2:
+                return UIState.MAIN_MENU
+        else:
+            # Avant fin de batch, on reste strict
+            if main_hits >= 2 and relic_hits < 2 and flatstone_hits < 2:
+                return UIState.MAIN_MENU
 
         if ctx.transition_started:
             return UIState.TRANSITION
-        
+
         if tick.reset_token_hits >= 1:
             return UIState.RESET_MENU
 
         return UIState.UNKNOWN
+
+# endregion
+#region Decision logic
 
     def decide(self, recognized_text: str, ctx: FlowContext) -> TickDecision:
         tick = self.detect_state(recognized_text, ctx)
@@ -217,7 +229,37 @@ class ForgeBotStateMachine:
         else:
             updates["empty_ticks"] = 0
 
+        # ==========================================================
+        # PRIORITÉ 1 : batch terminé
+        # ==========================================================
+        # ==========================================================
+        # PRIORITÉ 1 : batch terminé
+        # ==========================================================
         if ctx.processed_relics >= ctx.batch_size:
+            # Si on est revenu au menu principal, on peut reset le round
+            if state == UIState.MAIN_MENU:
+                updates["batch_exit_sent"] = False
+                updates["pending_new_round"] = True
+                updates["round_active"] = False
+                updates["transition_started"] = False
+                updates["skip_sent"] = False
+                return TickDecision(
+                    state=state,
+                    action=Action.RESET_ROUND,
+                    reason="Main menu reached after completed batch, reset before next round",
+                    updates=updates,
+                )
+
+            # Si un menu reset/confirmation apparaît, on sort avec interact
+            if state == UIState.RESET_MENU:
+                return TickDecision(
+                    state=state,
+                    action=Action.EXIT_RELIC_MENU,
+                    reason="Reset menu detected after batch complete, exit with interact",
+                    updates=updates,
+                )
+
+            # If exit not yet sent, send it once
             if not ctx.batch_exit_sent:
                 updates["batch_exit_sent"] = True
                 updates["transition_started"] = True
@@ -228,26 +270,43 @@ class ForgeBotStateMachine:
                     updates=updates,
                 )
 
+            # Ici : on ajoute un timeout sur TRANSITION
+            if state == UIState.TRANSITION:
+                # Si longtemps en TRANSITION après batch, tenter de forcer MAIN_MENU
+                if ctx.empty_ticks > 3:
+                    updates["transition_started"] = False
+                    return TickDecision(
+                        state=UIState.TRANSITION,
+                        action=Action.WAIT,
+                        reason="Long TRANSITION after batch, waiting for OCR change",
+                        updates=updates,
+                    )
+                # Après 6 ticks en TRANSITION, on force l’hypothèse MAIN_MENU même si OCR faible
+                if ctx.empty_ticks > 6:
+                    updates["transition_started"] = False
+                    updates["empty_ticks"] = 0
+                    # Retourne un état MAIN_MENU factice pour déclencher le reset
+                    return TickDecision(
+                        state=UIState.MAIN_MENU,
+                        action=Action.RESET_ROUND,
+                        reason="Forced main menu after long batch transition",
+                        updates=updates,
+                    )
+            # Sinon on attend que l'UI revienne à un état stable
             return TickDecision(
                 state=state,
                 action=Action.WAIT,
-                reason="Batch complete, exit already sent, wait for stable menu/reset",
+                reason="Batch complete, waiting for main menu or reset menu",
                 updates=updates,
             )
 
-        # ---- RELIC MENU ----
+        # ==========================================================
+        # RELIC MENU
+        # ==========================================================
         if state == UIState.RELIC_MENU:
             updates["transition_started"] = False
             updates["skip_sent"] = False
             updates["round_active"] = True
-
-            if ctx.processed_relics >= ctx.batch_size:
-                return TickDecision(
-                    state=state,
-                    action=Action.EXIT_RELIC_MENU,
-                    reason="Batch COMPLET (10/10), force sortie même si pas RESET_MENU",
-                    updates=updates,
-                )
 
             return TickDecision(
                 state=state,
@@ -256,13 +315,15 @@ class ForgeBotStateMachine:
                 updates=updates,
             )
 
-        # ---- FLATSTONE MENU ----
+        # ==========================================================
+        # FLATSTONE MENU
+        # ==========================================================
         if state == UIState.FLATSTONE_MENU:
             updates["round_active"] = True
             updates["transition_started"] = False
 
             text = tick.recognized_text or ""
-            batch_10_visible = "1010" in text
+            batch_10_visible = "1010" in text  # "10/10" après fuzzy_clean_text
 
             # 1) Envoyer F2 une seule fois
             if not ctx.batch_select_requested:
@@ -274,6 +335,7 @@ class ForgeBotStateMachine:
                     updates=updates,
                 )
 
+            # 2) Attendre confirmation visuelle du 10/10
             if not ctx.choose_10_done:
                 if batch_10_visible:
                     updates["choose_10_done"] = True
@@ -291,6 +353,7 @@ class ForgeBotStateMachine:
                     updates=updates,
                 )
 
+            # 3) Confirmer l'achat
             if not ctx.confirm_done:
                 updates["confirm_done"] = True
                 updates["transition_started"] = True
@@ -301,6 +364,7 @@ class ForgeBotStateMachine:
                     updates=updates,
                 )
 
+            # 4) Si on est toujours là, avancer
             updates["transition_started"] = True
             return TickDecision(
                 state=state,
@@ -309,19 +373,12 @@ class ForgeBotStateMachine:
                 updates=updates,
             )
 
-        # ---- TRANSITION ----
+        # ==========================================================
+        # TRANSITION
+        # ==========================================================
         if state == UIState.TRANSITION:
             updates["round_active"] = True
 
-
-            if ctx.processed_relics >= ctx.batch_size:
-                return TickDecision(
-                    state=state,
-                    action=Action.WAIT,
-                    reason="Batch complete, waiting for stable menu transition",
-                    updates=updates,
-                )
-    
             if not ctx.skip_sent:
                 updates["skip_sent"] = True
                 return TickDecision(
@@ -334,44 +391,28 @@ class ForgeBotStateMachine:
             return TickDecision(
                 state=state,
                 action=Action.WAIT,
-                reason="Transition in progress, wait for relic menu",
+                reason="Transition in progress, wait for next stable menu",
                 updates=updates,
             )
 
-        # --- RESET MENU ----
+        # ==========================================================
+        # RESET MENU
+        # ==========================================================
         if state == UIState.RESET_MENU:
-
             return TickDecision(
                 state=state,
                 action=Action.EXIT_RELIC_MENU,
-                reason="Reset menu detected, exit with F/interact",
+                reason="Reset menu detected, exit with interact",
                 updates=updates,
             )
 
-        # ---- MAIN MENU ----
+        # ==========================================================
+        # MAIN MENU
+        # ==========================================================
         if state == UIState.MAIN_MENU:
             updates["recovering"] = False
             updates["transition_started"] = False
             updates["skip_sent"] = False
-
-            if ctx.round_active and ctx.processed_relics >= ctx.batch_size:
-                updates["pending_new_round"] = True
-                return TickDecision(
-                    state=state,
-                    action=Action.RESET_ROUND,
-                    reason="Confirmed main menu after completed batch, reset before next round",
-                    updates=updates,
-                )
-            
-            if ctx.processed_relics >= ctx.batch_size:
-                updates["batch_exit_sent"] = False
-                updates["pending_new_round"] = True
-                return TickDecision(
-                    state=state,
-                    action=Action.RESET_ROUND,
-                    reason="Main menu reached after batch complete, reset round context",
-                    updates=updates,
-                )
 
             if ctx.pending_new_round:
                 updates["pending_new_round"] = False
@@ -399,15 +440,9 @@ class ForgeBotStateMachine:
                 updates=updates,
             )
 
-        # ---- UNKNOWN ----
-        if ctx.processed_relics >= ctx.batch_size:
-            return TickDecision(
-                state=state,
-                action=Action.EXIT_RELIC_MENU,
-                reason="Batch fini + UNKNOWN → sortie forcée",
-                updates=updates,
-            )
-
+        # ==========================================================
+        # UNKNOWN
+        # ==========================================================
         if ctx.round_active and ctx.processed_relics < ctx.batch_size:
             updates["recovering"] = True
             return TickDecision(
