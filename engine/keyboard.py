@@ -101,20 +101,23 @@ class KeyboardController:
     # Key press primitives
     # ------------------------------------------------------------------
 
-    def press(self, key: str, delay: float = None):
+    def press(self, key: str, delay: float = None, hold: float = None):
         """
-        Send a single keystroke to the game via xdotool.
-
-        The key name is normalized through _KEY_MAP.  If no explicit delay is
-        provided, falls back to cfg.KEY_INTERVAL.
+        Send a controlled keypress.
+        - hold: key down duration (if None, uses self.cfg.KEY_HOLD)
+        - delay: wait after release (if None, uses self.cfg.KEY_INTERVAL)
         """
         xkey = self._KEY_MAP.get(key.lower(), key)
-        subprocess.run(
-            ['xdotool', 'key', '--clearmodifiers', xkey],
-            env=self._env, capture_output=True
-        )
-        time.sleep(delay if delay is not None else self.cfg.KEY_INTERVAL)
+        after = delay if delay is not None else self.cfg.KEY_INTERVAL
+        hold = hold if hold is not None else self.cfg.KEY_HOLD
 
+        self._focus_game()
+        subprocess.run(['xdotool', 'keydown', '--clearmodifiers', xkey], env=self._env, capture_output=True)
+        time.sleep(hold)
+        subprocess.run(['xdotool', 'keyup', xkey], env=self._env, capture_output=True)
+        time.sleep(after)
+
+#region Game actions and mapping
     # ------------------------------------------------------------------
     # Game actions
     # ------------------------------------------------------------------
@@ -127,81 +130,26 @@ class KeyboardController:
         """Press the discard key."""
         self.press(self.cfg.KEY_DISCARD)
 
-    def forge_start(self):
-        """
-        Execute the key sequence to open the forge menu and start a forging session.
+    def press_interact(self):
+        self.press(self.cfg.KEY_INTERACT)
 
-        User has already chose the relic and set it to 10,
-        so we can directly start the forging process.
-        """
-        self._focus_game()
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-
-    def enter_relic_menu_from_flatstone(self):
-        """Already on flatstone menu: F to enter relic menu, F to skip animation."""
-        self._focus_game()
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM_EXTRA)
-
-    def prepare_next_round_from_after_batch(self):
-        """
-        After 10 relics:
-        F -> return to main
-        F -> open flatstone
-        F2 -> set 10
-        F -> enter relic menu
-        F -> skip animation
-        """
-        self._focus_game()
-        # time.sleep(self.cfg.WAIT_ANIM_EXTRA)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
+    def press_choose_10(self):
         self.press(self.cfg.KEY_CHOSE_10_RELICS)
-        time.sleep(self.cfg.WAIT_ANIM)
+
+    def press_keep(self):
+        self.press(self.cfg.KEY_KEEP)
+
+    def press_discard(self):
+        self.press(self.cfg.KEY_DISCARD)
+
+    def press_interact_and_wait_short(self):
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM)
+
+    def press_interact_and_wait_long(self):
         self.press(self.cfg.KEY_INTERACT)
         time.sleep(self.cfg.WAIT_ANIM_EXTRA)
-
-    def forge_cycle_start(self):
-        """New forge sequence: F (open) -> F2 (choose 10 relics) -> F (confirm) -> F (confirm, skip animation)"""
-        self._focus_game()
-        # time.sleep(self.cfg.WAIT_ANIM_EXTRA)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-        self.press(self.cfg.KEY_CHOSE_10_RELICS) 
-        time.sleep(self.cfg.WAIT_ANIM)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-
-    def forge_cycle_end(self):
-        """Close the forge cycle after all relics processed."""
-        self._focus_game()
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM_EXTRA)
-
-    def forge_end(self):
-        """Confirm the end of a forging session and wait for the UI transition."""
-        self._focus_game()
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM)
-
-    def exit_relic_menu(self):
-        """Exit the relic menu and return to main menu."""
-        self._focus_game()
-        self.press(self.cfg.KEY_INTERACT)
-        time.sleep(self.cfg.WAIT_ANIM_EXTRA)
-
-
+# endregion
 # ------------------------------------------------------------------
 # Helper I/O (shared utility)
 # ------------------------------------------------------------------

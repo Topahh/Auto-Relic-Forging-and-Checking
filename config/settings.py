@@ -123,6 +123,7 @@ class Config:
     KEY_CHOSE_10_RELICS: str = "f2"     # ← NEW
 
     # Base timing
+    KEY_HOLD: float = 0.08   
     KEY_INTERVAL: float = 0.30
     WAIT_ANIM:    float = 0.20
     BATCH_SIZE:   int   = 10
@@ -182,15 +183,17 @@ class Config:
             self.KEY_RIGHT           = config_file.get('Controls', 'key_right',              fallback=self.KEY_RIGHT)
             self.KEY_KEEP            = config_file.get('Controls', 'key_keep',               fallback=self.KEY_KEEP)
             self.KEY_DISCARD         = config_file.get('Controls', 'key_discard',            fallback=self.KEY_DISCARD)
-            self.KEY_CHOSE_10_RELICS = config_file.get('Controls', 'key_chose_10_relics',    fallback=self.KEY_CHOSE_10_RELICS)  # ← NEW
-
+            self.KEY_CHOSE_10_RELICS = config_file.get('Controls', 'key_chose_10_relics',    fallback=self.KEY_CHOSE_10_RELICS)
+        
         # --------------------------------------------------------------
         # [Timing] — all timing and sync parameters
         # --------------------------------------------------------------
         if config_file.has_section('Timing'):
-            self.KEY_INTERVAL      = config_file.getfloat('Timing', 'key_interval',       fallback=self.KEY_INTERVAL)
+            # Base timing (keyboard):
+            self.KEY_HOLD          = config_file.getfloat('Timing', 'key_hold',            fallback=self.KEY_HOLD)
+            self.KEY_INTERVAL      = config_file.getfloat('Timing', 'key_interval',        fallback=self.KEY_INTERVAL)
             self.WAIT_ANIM         = config_file.getfloat('Timing', 'wait_anim',           fallback=self.WAIT_ANIM)
-            self.WAIT_ANIM_EXTRA   = config_file.getfloat('Timing', 'wait_anim_extra',     fallback=self.WAIT_ANIM_EXTRA)  # ← NEW
+            self.WAIT_ANIM_EXTRA   = config_file.getfloat('Timing', 'wait_anim_extra',     fallback=self.WAIT_ANIM_EXTRA)  
             self.BATCH_SIZE        = config_file.getint  ('Timing', 'batch_size',          fallback=self.BATCH_SIZE)
             self.FORGE_MENU_SLEEP  = config_file.getfloat('Timing', 'forge_menu_sleep',    fallback=self.FORGE_MENU_SLEEP)
             self.FORGE_READY_SLEEP = config_file.getfloat('Timing', 'forge_ready_sleep',   fallback=self.FORGE_READY_SLEEP)

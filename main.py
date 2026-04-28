@@ -1,5 +1,3 @@
-# main.py
-
 import os
 import time
 import datetime
@@ -12,31 +10,49 @@ from engine.ocr import OCREngine
 from engine.keyboard import KeyboardController
 from engine.capture import ScreenCapture
 from engine.matcher import ItemMatcher
+from engine.flow import ForgeFlow, FlowHooks
+from engine.state_machine import ForgeBotStateMachine, FlowContext
 # from engine.locker import CurrencyLocker
 from utils.text import fuzzy_clean_text, natural_sort_key
 from utils.stats import Statistics
 from utils.signal import StopSignal
+
 
 # region ForgeBot
 class ForgeBot:
     """Forge Bot — OCR synchronized, fully INI-configured."""
 
     def __init__(self):
-        self.cfg      = Config()
-        self.ocr      = OCREngine(self.cfg)          # OCR_LANG read from [OCR] in hajiwo.ini
+        self.cfg = Config()
+        self.ocr = OCREngine(self.cfg)
         self.keyboard = KeyboardController(self.cfg)
-        self.matcher  = ItemMatcher(self.cfg)
-        self.capture  = ScreenCapture(self.cfg.SCAN_REGION)
-        # self.debug_save_capture_series("before_round")
+        self.matcher = ItemMatcher(self.cfg)
+        self.capture = ScreenCapture(self.cfg.SCAN_REGION)
         self.debug_screenshot()
-        self.stats       = Statistics(self.cfg.lang)
+        self.stats = Statistics(self.cfg.lang)
         self.stop_signal = StopSignal(self.cfg.lang)
         self.stop_signal.clear()
         self.locker = None
         self.first_round = True
-        # All sync / timing parameters come from self.cfg (hajiwo.ini [Timing])
-        # No hardcoded _sync_* attributes here.
+        self.flow_context = FlowContext(batch_size=self.cfg.BATCH_SIZE)
+        self.state_machine = ForgeBotStateMachine(
+            relic_tokens=self.cfg.RELIC_TOKENS,
+            flatstone_tokens=self.cfg.FLATSTONE_TOKENS,
+            min_text_len=self.cfg.MIN_TEXT_LEN,
+            batch_size=self.cfg.BATCH_SIZE,
+        )
+        self.flow = ForgeFlow(
+            cfg=self.cfg,
+            keyboard=self.keyboard,
+            hooks=FlowHooks(
+                capture_text=self.capture_text,
+                process_item=self.process_item,
+                ensure_relic_menu=self.ensure_relic_menu,
+            ),
+        )
 
+# endregion
+# region 
     # ==================== SYNCHRONIZATION ====================
 
     def ensure_relic_menu(self, index: int, max_retries: int = 5) -> bool:
@@ -63,7 +79,6 @@ class ForgeBot:
                 time.sleep(max(self.cfg.WAIT_ANIM, self.cfg.POLL_INTERVAL))
                 continue
 
-            # OCR vide ou unknown UI
             print(f" [{index:2d}] [ENSURE] unknown/empty UI -> press F to recover")
             self.keyboard.press(self.cfg.KEY_INTERACT)
             time.sleep(max(self.cfg.WAIT_ANIM, self.cfg.POLL_INTERVAL))
@@ -72,26 +87,33 @@ class ForgeBot:
 
     def is_relic_menu(self, text: str) -> bool:
         """
-        Returns true if the given text contains any of the 
-        relic menu tokens configured in self.cfg.RELIC_TOKENS.
+        Returns true if the given text contains any of the relic menu tokens
+        configured in self.cfg.RELIC_TOKENS.
         """
         if not self.cfg.RELIC_TOKENS:
             return True
         t = text.lower()
         return any(tok in t for tok in self.cfg.RELIC_TOKENS)
-    
+
     def is_flatstone_menu(self, text: str) -> bool:
         if not self.cfg.FLATSTONE_TOKENS:
             return False
         t = text.lower()
         hits = sum(1 for tok in self.cfg.FLATSTONE_TOKENS if tok in t)
         return hits >= 2
-    
+
     def is_partial_relic_overlay(self, text: str) -> bool:
         t = text.lower()
-        return ("close" in t and "reset" in t and
-                "addremovefavorites" not in t and
-                "sellnow" not in t)
+        return (
+            "close" in t
+            and "reset" in t
+            and "addremovefavorites" not in t
+            and "sellnow" not in t
+        )
+
+    def looks_like_action_menu(self, text: str) -> bool:
+        t = (text or "").lower()
+        return any(token in t for token in ("close", "reset", "favorites", "sell"))
 
     def capture_text(self) -> Tuple[np.ndarray, list, str]:
         image = self.capture.capture()
@@ -100,27 +122,34 @@ class ForgeBot:
         recognized = "".join(cleaned)
         return image, texts, recognized
 
-    def frame_has_changed(self, prev_frame: np.ndarray, new_frame: np.ndarray,
-                          threshold: float = None) -> bool:
-        """Visual validation: has the screen changed?
-        Threshold defaults to cfg.SYNC_THRESHOLD ([Timing] sync_threshold)."""
+    def frame_has_changed(
+        self,
+        prev_frame: np.ndarray,
+        new_frame: np.ndarray,
+        threshold: float = None
+    ) -> bool:
+        """Visual validation: has the screen changed?"""
         if prev_frame is None or new_frame is None:
             return True
         threshold = threshold if threshold is not None else self.cfg.SYNC_THRESHOLD
         if len(prev_frame.shape) == 3:
             prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-            new_gray  = cv2.cvtColor(new_frame,  cv2.COLOR_BGR2GRAY)
+            new_gray = cv2.cvtColor(new_frame, cv2.COLOR_BGR2GRAY)
         else:
             prev_gray, new_gray = prev_frame, new_frame
-        diff      = cv2.absdiff(prev_gray, new_gray)
+        diff = cv2.absdiff(prev_gray, new_gray)
         mean_diff = np.mean(diff)
-        changed   = mean_diff > threshold
+        changed = mean_diff > threshold
         print(f"  [SYNC] frame_diff={mean_diff:.1f}>{threshold}={changed}")
         return changed
 
-    def is_valid_ocr_text(self, text: str, prev_text: str = None, min_len: int = None) -> bool:
-        """Textual validation.
-        min_len defaults to cfg.MIN_TEXT_LEN ([Timing] min_text_len)."""
+    def is_valid_ocr_text(
+        self,
+        text: str,
+        prev_text: str = None,
+        min_len: int = None
+    ) -> bool:
+        """Textual validation."""
         min_len = min_len if min_len is not None else self.cfg.MIN_TEXT_LEN
         if not text or len(text) < min_len:
             return False
@@ -130,15 +159,17 @@ class ForgeBot:
             return False
         return True
 
-    def wait_for_next_item(self, prev_frame: np.ndarray, prev_text: str
-                           ) -> Tuple[Optional[np.ndarray], Optional[str]]:
-        """Wait for the next valid item frame.
-        All timeouts/intervals come from cfg ([Timing] section)."""
-        timeout        = self.cfg.SYNC_TIMEOUT
-        poll_interval  = self.cfg.POLL_INTERVAL
+    def wait_for_next_item(
+        self,
+        prev_frame: np.ndarray,
+        prev_text: str
+    ) -> Tuple[Optional[np.ndarray], Optional[str]]:
+        """Wait for the next valid item frame."""
+        timeout = self.cfg.SYNC_TIMEOUT
+        poll_interval = self.cfg.POLL_INTERVAL
         empty_reads_max = self.cfg.EMPTY_READS_MAX
-        start_time     = time.time()
-        empty_reads    = 0
+        start_time = time.time()
+        empty_reads = 0
 
         print(f"  [SYNC] Waiting next valid item (timeout={timeout}s)...")
         while time.time() - start_time < timeout:
@@ -152,7 +183,7 @@ class ForgeBot:
 
             print("  [SYNC] frame changed → OCR...")
             new_texts = self.ocr.recognize(new_frame)
-            new_text  = "".join([fuzzy_clean_text(t) for t in new_texts])
+            new_text = "".join([fuzzy_clean_text(t) for t in new_texts])
 
             if self.looks_like_action_menu(new_text):
                 print(f"  [SYNC] Action menu detected: '{new_text}' → skip")
@@ -174,13 +205,16 @@ class ForgeBot:
         return None, None
 
 # endregion
-# region Processing item
+# region processing items
     # ==================== PROCESS_ITEM ====================
 
     def process_item(self, index: int) -> Tuple[bool, str, np.ndarray]:
         """
-        Ensure relic menu, then OCR -> match -> keep/discard.
-        Tracks partial matches (at least one primary keyword found but group not validated).
+        Ensure relic menu, OCR current relic, decide keep/discard,
+        then wait for a real transition to the next relic before returning success.
+
+        Returns:
+            (success, recognized_text, image)
         """
         if not self.ensure_relic_menu(index):
             print(f" [{index:2d}] [ERROR] UI not recovered -> skip item")
@@ -201,97 +235,32 @@ class ForgeBot:
             print(f" [{index:2d}] ✗ DISCARD - {info} [KEY={self.cfg.KEY_DISCARD}]")
 
             if has_partial and blacklist_kw:
-                # Primary threshold met but vetoed by blacklist
                 self.stats.add_qualified_blacklisted(texts, matched_kw, blacklist_kw)
-
             elif has_partial and not blacklist_kw:
-                # At least one primary keyword found but threshold or B condition not met
                 self.stats.add_partial_match(texts, matched_kw, info, group_name)
 
             self.keyboard.discard_item()
 
-        if index < self.cfg.BATCH_SIZE:
-            print(f" [{index:2d}] [SYNC] waiting UI transition to next relic...")
-            time.sleep(max(self.cfg.KEY_INTERVAL, self.cfg.POLL_INTERVAL) * 2)
+        # For the last relic of the batch, do not wait for a "next item"
+        if index >= self.cfg.BATCH_SIZE:
+            print(f" [{index:2d}] [SYNC] last relic in batch -> no next-item wait needed")
+            return True, recognized, image
 
-        return keep, recognized, image
+        print(f" [{index:2d}] [SYNC] waiting for next relic...")
+        next_frame, next_text = self.wait_for_next_item(image, recognized)
 
-    def debug_save_capture_series(self, prefix="series", count=5, delay=0.5):
-        """Save several consecutive captures to verify helper output."""
-        prev = None
-        base_dir  = os.path.dirname(os.path.abspath(__file__))
-        debug_dir = os.path.join(base_dir, "debug_captures")
-        os.makedirs(debug_dir, exist_ok=True)
+        if next_frame is None or not next_text:
+            print(f" [{index:2d}] [SYNC] next relic not observed -> action not validated")
+            return False, recognized, image
 
-        print(f"[DEBUG] Saving {count} captures to: {debug_dir}")
+        print(f" [{index:2d}] [SYNC] next relic detected: '{next_text}'")
+        return True, recognized, image
 
-        for i in range(count):
-            img = self.capture.capture()
-            ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            path = os.path.join(debug_dir, f"{prefix}_{i:02d}_{ts}.png")
-            ok   = cv2.imwrite(path, img)
-            print(f"[DEBUG] #{i} saved={ok} path={path}")
-
-            if prev is not None:
-                diff = np.mean(cv2.absdiff(prev, img))
-                print(f"[DEBUG] #{i} diff_vs_prev={diff:.3f}")
-
-            try:
-                texts  = self.ocr.recognize(img)
-                merged = "".join([fuzzy_clean_text(t) for t in texts])
-                print(f"[DEBUG] #{i} OCR='{merged}' raw={texts}")
-            except Exception as e:
-                print(f"[DEBUG] #{i} OCR error: {e}")
-
-            prev = img
-            time.sleep(delay)
-
-#endregion
-# region Game actions
-    # ==================== RUN_ROUND ====================
+# region flow and state machine
+    # ==================== GAME ACTIONS ====================
 
     def run_round(self) -> bool:
-        """
-        First round:
-            user already on flatstone -> F -> F -> process 10 relics
-        Next rounds:
-            after previous batch -> F -> F -> F2 -> F -> F -> process 10 relics
-        """
-        self.stats.rounds += 1
-        print(f"\n🔥 [ROUND {self.stats.rounds}]")
-
-        if self.stop_signal.should_stop():
-            return False
-
-        if self.first_round:
-            print(" [FLOW] First round: flatstone -> relic menu")
-            self.keyboard.enter_relic_menu_from_flatstone()
-            self.first_round = False
-        else:
-            print(" [FLOW] Next round: after batch -> flatstone -> relic menu")
-            self.keyboard.prepare_next_round_from_after_batch()
-
-        processed_count = 0
-
-        for item_idx in range(1, self.cfg.BATCH_SIZE + 1):
-            if self.stop_signal.should_stop():
-                return False
-
-            print(f"\n [FLOW] Processing relic {item_idx}/{self.cfg.BATCH_SIZE}")
-            keep, current_text, _ = self.process_item(item_idx)
-
-            if not current_text:
-                print(f" [ERROR] Item {item_idx} UI/OCR recovery failed -> stop round")
-                break
-
-            processed_count += 1
-
-        if processed_count == self.cfg.BATCH_SIZE:
-            print(" [FLOW] Exiting relic menu after batch...")
-            self.keyboard.exit_relic_menu()
-
-        print(f"\n 🎯 FINAL Batch: {processed_count}/{self.cfg.BATCH_SIZE} relics processed")
-        return processed_count == self.cfg.BATCH_SIZE
+        raise NotImplementedError("run_round is deprecated; use tick() and the state machine flow")
 
     # ==================== RUN ====================
 
@@ -300,41 +269,48 @@ class ForgeBot:
         return True
 
     def show_config_keywords(self):
-        print("\n" + "-"*50)
+        print("\n" + "-" * 50)
         print("Keyword Groups")
-        print("-"*50)
+        print("-" * 50)
         if not self.cfg.KEYWORD_GROUPS:
             print("No keyword groups")
         else:
             for group_name in sorted(self.cfg.KEYWORD_GROUPS.keys(), key=natural_sort_key):
                 group_config = self.cfg.KEYWORD_GROUPS[group_name]
                 print(f"\n【{group_name}】")
-                if group_config['a']:
+                if group_config["a"]:
                     print(f"  Required (≥{group_config['min']}): {chr(32).join(group_config['a'])}")
-                if group_config['b']:
+                if group_config["b"]:
                     print(f"  Optional : {chr(32).join(group_config['b'])}")
-                if group_config['blacklist']:
+                if group_config["blacklist"]:
                     print(f"  Blacklist: {chr(32).join(group_config['blacklist'])}")
-        print("="*50)
+        print("=" * 50)
 
     def wait_user_ready(self) -> bool:
         print("\n[STEP 2] Prepare...")
-        print("="*50)
+        print("=" * 50)
         print("Steps:")
         print("  1. Enter shop")
         print("  2. Select relic batch (10)")
         print("  3. Press Enter")
         print("\nPress ESC to stop anytime")
-        print("="*50)
+        print("=" * 50)
         print("\nPress Enter to continue...")
         input()
         return True
 
+    def tick(self) -> bool:
+        _, _, recognized = self.capture_text()
+        decision = self.state_machine.decide(recognized, self.flow_context)
+        print(f"[STATE] state={decision.state} action={decision.action} reason={decision.reason}")
+        self.state_machine.apply_updates(self.flow_context, decision)
+        return self.flow.execute(decision.action, self.flow_context)
+
     def run(self):
         """Main loop."""
-        print("="*50)
+        print("=" * 50)
         print("Relic Auto-Forging — OCR SYNC")
-        print("="*50)
+        print("=" * 50)
 
         if not self.cfg.KEYWORD_GROUPS:
             print("[ERROR] No keywords configured")
@@ -360,18 +336,11 @@ class ForgeBot:
             print(f"{i}...")
             time.sleep(1)
 
-        consecutive_fails = 0
         try:
             while not self.stop_signal.should_stop():
-                if not self.run_round():
-                    consecutive_fails += 1
-                    print(f"[WARNING] Round failed ({consecutive_fails}/3)")
-                    if consecutive_fails >= 3:
-                        print("[STOP] Too many failed rounds")
-                        break
+                if not self.tick():
+                    print("[WARNING] Tick failed, retrying...")
                     time.sleep(1)
-                else:
-                    consecutive_fails = 0
         except KeyboardInterrupt:
             print("\n[INTERRUPTED]")
         except Exception as e:
@@ -388,17 +357,18 @@ class ForgeBot:
                 self.capture.close()
             except Exception:
                 pass
-            timestamp    = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             log_filename = f"hajiwo_log_{timestamp}.txt"
-            script_dir   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
-            log_path     = os.path.join(script_dir, log_filename)
+            script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
+            log_path = os.path.join(script_dir, log_filename)
             self.stats.save_log(log_path)
 
     def debug_screenshot(self):
-        img  = self.capture.capture()
+        img = self.capture.capture()
         path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "debug_captures",
-            f"debug_{datetime.datetime.now().strftime('%H%M%S')}.png"
+            os.path.dirname(os.path.abspath(__file__)),
+            "debug_captures",
+            f"debug_{datetime.datetime.now().strftime('%H%M%S')}.png",
         )
         cv2.imwrite(path, img)
         print(f"[DEBUG] Saved: {path}")
@@ -423,12 +393,13 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
     finally:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         if bot and bot.cfg and bot.cfg.lang:
-            print(bot.cfg.lang.get('program_done'))
+            print(bot.cfg.lang.get("program_done"))
         else:
             print("Program completed")
-        print("="*50)
+        print("=" * 50)
         input("Press Enter to exit...")
+
 
 # endregion

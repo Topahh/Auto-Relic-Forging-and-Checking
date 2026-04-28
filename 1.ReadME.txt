@@ -36,7 +36,9 @@ project/
 │   ├── keyboard.py                 ← Classe KeyboardController (xdotool)
 │   ├── matcher.py                  ← Classe ItemMatcher (logique de matching mots-clés)
 │   ├── ocr.py                      ← Classe OCREngine (PaddleOCR, lang='en')
-│   └── locker.py                   ← Classe CurrencyLocker (pymem, Windows only, désactivé Linux)
+│   ├── locker.py                   ← Classe CurrencyLocker (pymem, Windows only, désactivé Linux)
+|   ├── flow.py                     ← Classe FlowHooks, ForgeFlow
+|   └── state_machine.py            ← Classe ForgeBotStateMachine, UIState, Action, TickInput, FlowContext, TickDecision
 └── utils/
     ├── __init__.py
     ├── text.py                     ← fuzzy_clean_text(), natural_sort_key()
