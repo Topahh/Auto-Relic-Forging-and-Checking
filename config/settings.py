@@ -148,6 +148,10 @@ class Config:
     # Language (loaded last)
     lang: Language = None
 
+    # validation length for OCR menu recognition
+    MIN_TEXT_LEN: int = 40
+    RELIC_MIN_LEN: int = 65
+
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
@@ -262,16 +266,27 @@ class Config:
         # [RelicMenu] — tokens for relic selection menu / flatstone menu
         # --------------------------------------------------------------
         if config_file.has_section('RelicMenu'):
-            raw_relic_tokens = config_file.get('RelicMenu', 'relic_tokens', fallback='')
-            self.RELIC_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_relic_tokens.split(',') if t.strip()]
+            raw_relic_tokens =          config_file.get('RelicMenu', 'relic_tokens', fallback='')
+            self.RELIC_TOKENS =         [fuzzy_clean_text(t.strip()) for t in raw_relic_tokens.split(',') if t.strip()]
 
-            raw_flatstone_tokens = config_file.get('RelicMenu', 'flatstone_tokens', fallback='')
-            self.FLATSTONE_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_flatstone_tokens.split(',') if t.strip()]
+            raw_flatstone_tokens =      config_file.get('RelicMenu', 'flatstone_tokens', fallback='')
+            self.FLATSTONE_TOKENS =     [fuzzy_clean_text(t.strip()) for t in raw_flatstone_tokens.split(',') if t.strip()]
 
-            raw_main_menu_tokens = config_file.get('RelicMenu', 'main_menu_tokens', fallback='')
-            self.MAIN_MENU_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_main_menu_tokens.split(',') if t.strip()]
+            raw_main_menu_tokens =      config_file.get('RelicMenu', 'main_menu_tokens', fallback='')
+            self.MAIN_MENU_TOKENS =     [fuzzy_clean_text(t.strip()) for t in raw_main_menu_tokens.split(',') if t.strip()]
+
+            raw_reset_menu_tokens =     config_file.get('RelicMenu', 'reset_menu_tokens', fallback='')
+            self.RESET_MENU_TOKENS =    [fuzzy_clean_text(t.strip()) for t in raw_reset_menu_tokens.split(',') if t.strip()]
         else:
             self.RELIC_TOKENS = []
             self.FLATSTONE_TOKENS = []
             self.MAIN_MENU_TOKENS = []
+            self.RESET_MENU_TOKENS = []
+
+        if config_file.has_section('validation'):
+            self.MIN_TEXT_LEN = config_file.getint('validation', 'min_text_len', fallback=self.MIN_TEXT_LEN)
+            self.RELIC_MIN_LEN = config_file.getint('validation', 'relic_min_len', fallback=self.RELIC_MIN_LEN)
+        else:
+            self.MIN_TEXT_LEN = 40
+            self.RELIC_MIN_LEN = 65
 # endregion

@@ -40,7 +40,8 @@ class ForgeBot:
             relic_tokens=self.cfg.RELIC_TOKENS,
             flatstone_tokens=self.cfg.FLATSTONE_TOKENS,
             main_menu_tokens=self.cfg.MAIN_MENU_TOKENS,
-            min_text_len=self.cfg.MIN_TEXT_LEN,
+            reset_menu_tokens=self.cfg.RESET_MENU_TOKENS,
+            min_text_len=self.cfg.MIN_TEXT_LEN,  # Seuil global state machine
             batch_size=self.cfg.BATCH_SIZE,
         )
         self.flow = ForgeFlow(
@@ -97,7 +98,10 @@ class ForgeBot:
 
     def is_main_menu(self, text: str) -> bool:
         return self.state_machine.is_main_menu(text)
-    
+
+    def is_reset_menu(self, text: str) -> bool:
+        return self.state_machine.is_reset_menu(text)
+
     def is_partial_relic_overlay(self, text: str) -> bool:
         t = text.lower()
         return (
@@ -109,16 +113,18 @@ class ForgeBot:
 
     def looks_like_action_menu(self, text: str) -> bool:
         t = (text or "").lower()
-
-        # Real relic menu usually contains add/remove/favorites/sell UI tokens.
-        # Do not treat that as an overlay/action popup.
-        if self.is_relic_menu(t):
+        
+        # NOUVEAU : ignore si fin de batch
+        if self.flow_context.processed_relics >= self.cfg.BATCH_SIZE - 2:
             return False
-
-        # Only detect tiny close/reset popups with almost no relic content.
+        
+        # NOUVEAU : ignore si contient "reset" ET "favorites/sell"
+        if "reset" in t and ("favorites" in t or "sellnow" in t):
+            return False
+        
+        # Tes règles existantes...
         has_overlay_tokens = ("close" in t and "reset" in t)
         has_relic_tokens = any(tok in t for tok in self.cfg.RELIC_TOKENS)
-
         return has_overlay_tokens and not has_relic_tokens and len(t) < 40
 
     def capture_text(self) -> Tuple[np.ndarray, list, str]:
@@ -183,7 +189,12 @@ class ForgeBot:
                 return None, None
 
             new_frame = self.capture.capture()
+            new_texts = self.ocr.recognize(new_frame)
+            new_text = "".join([fuzzy_clean_text(t) for t in new_texts])
             if not self.frame_has_changed(prev_frame, new_frame):
+                if len(new_text) >= self.cfg.RELIC_MIN_LEN and new_text != prev_text:
+                    print(f"  [SYNC] ✓ TEXT CHANGE fallback (frame_diff faible): '{new_text[:60]}...'")
+                    return new_frame, new_text
                 time.sleep(poll_interval)
                 continue
 
@@ -196,6 +207,14 @@ class ForgeBot:
                 time.sleep(poll_interval)
                 continue
 
+            if (
+                len(new_text) >= self.cfg.RELIC_MIN_LEN
+                and new_text != prev_text    # Changement de texte
+                and not self.looks_like_action_menu(new_text)  # Pas overlay
+            ):
+                print(f"  [SYNC] ✓ FALLBACK ✓ len={len(new_text)} != prev: '{new_text[:60]}...'")
+                return new_frame, new_text
+
             if self.is_relic_menu(new_text) and self.is_valid_ocr_text(new_text, prev_text):
                 print(f"  [SYNC] ✓ Next relic menu detected: '{new_text}'")
                 return new_frame, new_text
@@ -204,7 +223,7 @@ class ForgeBot:
                 print(f"  [SYNC] main menu detected during sync: '{new_text}'")
                 return new_frame, new_text
 
-            if not self.is_valid_ocr_text(new_text, prev_text):
+            if not self.is_valid_ocr_text(new_text, prev_text, self.cfg.RELIC_MIN_LEN):
                 print(f"  [SYNC] Invalid OCR: '{new_text}' (len={len(new_text)})")
                 empty_reads += 1
                 if empty_reads >= empty_reads_max:
@@ -265,6 +284,12 @@ class ForgeBot:
 
         if next_frame is None or not next_text:
             print(f" [{index:2d}] [SYNC] next relic not observed -> action not validated")
+            self.flow_context.max_failed_syncs += 1
+            if self.flow_context.max_failed_syncs >= 3 and index >= 8:
+                print(f"[END] {self.flow_context.max_failed_syncs} failed syncs → end of batch")
+                self.flow_context.round_active = False
+                self.flow_context.pending_new_round = True
+                return True, recognized, image
             return False, recognized, image
 
         print(f" [{index:2d}] [SYNC] next relic detected: '{next_text}'")
