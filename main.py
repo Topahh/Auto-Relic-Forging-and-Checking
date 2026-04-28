@@ -12,7 +12,7 @@ from engine.keyboard import KeyboardController
 from engine.capture import ScreenCapture
 from engine.matcher import ItemMatcher
 from engine.flow import ForgeFlow, FlowHooks
-from engine.state_machine import ForgeBotStateMachine, FlowContext, TickInput
+from engine.state_machine import ForgeBotStateMachine, FlowContext, TickInput, UIState
 # from engine.locker import CurrencyLocker
 from utils.text import fuzzy_clean_text, natural_sort_key
 from utils.stats import Statistics
@@ -90,17 +90,25 @@ class ForgeBot:
 
         return False
     
-    def is_relic_menu(self, text: str) -> bool:
-        return self.state_machine.is_relic_menu(text)
+    def is_main_menu(self, text: str) -> bool:
+        tick = self.state_machine.detect_state(text, self.flow_context)
+        state = self.state_machine.classify_state(tick, self.flow_context)
+        return state == UIState.MAIN_MENU
 
     def is_flatstone_menu(self, text: str) -> bool:
-        return self.state_machine.is_flatstone_menu(text)
-
-    def is_main_menu(self, text: str) -> bool:
-        return self.state_machine.is_main_menu(text)
-
+        tick = self.state_machine.detect_state(text, self.flow_context)
+        state = self.state_machine.classify_state(tick, self.flow_context)
+        return state == UIState.FLATSTONE_MENU
+    
+    def is_relic_menu(self, text: str) -> bool:
+        tick = self.state_machine.detect_state(text, self.flow_context)
+        state = self.state_machine.classify_state(tick, self.flow_context)
+        return state == UIState.RELIC_MENU
+    
     def is_reset_menu(self, text: str) -> bool:
-        return self.state_machine.is_reset_menu(text)
+        tick = self.state_machine.detect_state(text, self.flow_context)
+        state = self.state_machine.classify_state(tick, self.flow_context)
+        return state == UIState.RESET_MENU
 
     def is_partial_relic_overlay(self, text: str) -> bool:
         t = text.lower()
@@ -159,22 +167,24 @@ class ForgeBot:
         self,
         text: str,
         prev_text: str = None,
-        min_len: int = None
+        min_len: int = None,
+        allow_unchanged: bool = False
     ) -> bool:
-        """Textual validation."""
+        """Textual validation: does the OCR text look valid enough to consider a real menu change?"""
         min_len = min_len if min_len is not None else self.cfg.MIN_TEXT_LEN
         if not text or len(text) < min_len:
             return False
-        if prev_text and text == prev_text:
+        if not allow_unchanged and prev_text and text == prev_text:
             return False
         if len(set(text)) / len(text) < 0.3:
             return False
         return True
-
+    
     def wait_for_next_item(
         self,
         prev_frame: np.ndarray,
-        prev_text: str
+        prev_text: str,
+        allow_unchanged_text: bool = False
     ) -> Tuple[Optional[np.ndarray], Optional[str]]:
         """Wait for the next valid item frame."""
         timeout = self.cfg.SYNC_TIMEOUT
@@ -192,9 +202,11 @@ class ForgeBot:
             new_texts = self.ocr.recognize(new_frame)
             new_text = "".join([fuzzy_clean_text(t) for t in new_texts])
             if not self.frame_has_changed(prev_frame, new_frame):
-                if len(new_text) >= self.cfg.RELIC_MIN_LEN and new_text != prev_text:
-                    print(f"  [SYNC] ✓ TEXT CHANGE fallback (frame_diff faible): '{new_text[:60]}...'")
-                    return new_frame, new_text
+                if len(new_text) >= self.cfg.RELIC_MIN_LEN:
+                    if allow_unchanged_text:
+                        return new_frame, new_text
+                    elif new_text != prev_text:
+                        return new_frame, new_text
                 time.sleep(poll_interval)
                 continue
 
@@ -223,7 +235,12 @@ class ForgeBot:
                 print(f"  [SYNC] main menu detected during sync: '{new_text}'")
                 return new_frame, new_text
 
-            if not self.is_valid_ocr_text(new_text, prev_text, self.cfg.RELIC_MIN_LEN):
+            if not self.is_valid_ocr_text(
+                new_text,
+                prev_text,
+                self.cfg.RELIC_MIN_LEN,
+                allow_unchanged=allow_unchanged_text
+            ):
                 print(f"  [SYNC] Invalid OCR: '{new_text}' (len={len(new_text)})")
                 empty_reads += 1
                 if empty_reads >= empty_reads_max:
@@ -254,6 +271,7 @@ class ForgeBot:
             return False, "", None
 
         image, texts, recognized = self.capture_text()
+
         print(f" [{index:2d}] OCR: '{recognized}' (len={len(recognized)})")
 
         keep, info, matched_kw, blacklist_kw, has_partial, group_name = self.matcher.match(texts)
@@ -280,12 +298,13 @@ class ForgeBot:
             return True, recognized, image
 
         print(f" [{index:2d}] [SYNC] waiting for next relic...")
-        next_frame, next_text = self.wait_for_next_item(image, recognized)
+        next_frame, next_text = self.wait_for_next_item(image, recognized, allow_unchanged_text=False)
 
         if next_frame is None or not next_text:
             print(f" [{index:2d}] [SYNC] next relic not observed -> action not validated")
             self.flow_context.max_failed_syncs += 1
-            if self.flow_context.max_failed_syncs >= 3 and index >= 8:
+            # if self.flow_context.max_failed_syncs >= 3 and index >= 8:
+            if index >= self.cfg.BATCH_SIZE - 2:
                 print(f"[END] {self.flow_context.max_failed_syncs} failed syncs → end of batch")
                 self.flow_context.round_active = False
                 self.flow_context.pending_new_round = True
@@ -340,6 +359,11 @@ class ForgeBot:
 
     def tick(self) -> bool:
         _, _, recognized = self.capture_text()
+        print(
+            f"[OCR] len={len(recognized)} grace={self.flow_context.main_menu_grace_ticks} "
+            f"transition={self.flow_context.transition_ticks} pending={self.flow_context.pending_new_round} "
+            f"text='{recognized[:120]}'"
+        )
         decision = self.state_machine.decide(recognized, self.flow_context)
         print(f"[STATE] state={decision.state} action={decision.action} reason={decision.reason}")
         self.state_machine.apply_updates(self.flow_context, decision)

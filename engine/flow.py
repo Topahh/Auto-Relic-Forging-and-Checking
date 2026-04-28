@@ -96,8 +96,10 @@ class ForgeFlow:
         if action == Action.RESET_ROUND:
             print("[FLOW] Reset round context")
             pending_new_round = ctx.pending_new_round
+            main_menu_grace_ticks = ctx.main_menu_grace_ticks
             ctx.reset_round()
             ctx.pending_new_round = pending_new_round
+            ctx.main_menu_grace_ticks = main_menu_grace_ticks
             return True
 
         print(f"[FLOW] Unhandled action: {action}")
