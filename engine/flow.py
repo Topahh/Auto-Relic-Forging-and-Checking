@@ -50,16 +50,19 @@ class ForgeFlow:
         if action == Action.ENTER_FLATSTONE:
             print("[FLOW] MAIN_MENU -> press interact to enter flatstone")
             self.keyboard.press(self.cfg.KEY_INTERACT)
+            time.sleep(self.cfg.WAIT_ANIM)
             return True
 
         if action == Action.CHOOSE_BATCH_SIZE:
             print(f"[FLOW] FLATSTONE_MENU -> choose batch size with {self.cfg.KEY_CHOSE_10_RELICS}")
             self.keyboard.press(self.cfg.KEY_CHOSE_10_RELICS)
+            time.sleep(self.cfg.WAIT_ANIM)
             return True
 
         if action == Action.CONFIRM_FLATSTONE:
             print("[FLOW] FLATSTONE_MENU -> confirm purchase/opening")
             self.keyboard.press(self.cfg.KEY_INTERACT)
+            time.sleep(self.cfg.WAIT_ANIM)
             return True
 
         if action == Action.SKIP_TO_RELIC_MENU:
@@ -92,7 +95,9 @@ class ForgeFlow:
 
         if action == Action.RESET_ROUND:
             print("[FLOW] Reset round context")
+            pending_new_round = ctx.pending_new_round
             ctx.reset_round()
+            ctx.pending_new_round = pending_new_round
             return True
 
         print(f"[FLOW] Unhandled action: {action}")

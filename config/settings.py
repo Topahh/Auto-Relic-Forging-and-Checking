@@ -267,7 +267,11 @@ class Config:
 
             raw_flatstone_tokens = config_file.get('RelicMenu', 'flatstone_tokens', fallback='')
             self.FLATSTONE_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_flatstone_tokens.split(',') if t.strip()]
+
+            raw_main_menu_tokens = config_file.get('RelicMenu', 'main_menu_tokens', fallback='')
+            self.MAIN_MENU_TOKENS = [fuzzy_clean_text(t.strip()) for t in raw_main_menu_tokens.split(',') if t.strip()]
         else:
             self.RELIC_TOKENS = []
             self.FLATSTONE_TOKENS = []
+            self.MAIN_MENU_TOKENS = []
 # endregion

@@ -1,3 +1,4 @@
+# main.py
 import os
 import time
 import datetime
@@ -11,7 +12,7 @@ from engine.keyboard import KeyboardController
 from engine.capture import ScreenCapture
 from engine.matcher import ItemMatcher
 from engine.flow import ForgeFlow, FlowHooks
-from engine.state_machine import ForgeBotStateMachine, FlowContext
+from engine.state_machine import ForgeBotStateMachine, FlowContext, TickInput
 # from engine.locker import CurrencyLocker
 from utils.text import fuzzy_clean_text, natural_sort_key
 from utils.stats import Statistics
@@ -38,6 +39,7 @@ class ForgeBot:
         self.state_machine = ForgeBotStateMachine(
             relic_tokens=self.cfg.RELIC_TOKENS,
             flatstone_tokens=self.cfg.FLATSTONE_TOKENS,
+            main_menu_tokens=self.cfg.MAIN_MENU_TOKENS,
             min_text_len=self.cfg.MIN_TEXT_LEN,
             batch_size=self.cfg.BATCH_SIZE,
         )
@@ -56,10 +58,6 @@ class ForgeBot:
     # ==================== SYNCHRONIZATION ====================
 
     def ensure_relic_menu(self, index: int, max_retries: int = 5) -> bool:
-        """
-        Bring the UI to a confirmed relic menu state before processing.
-        Returns True if relic menu is confirmed, False after exhausting retries.
-        """
         for attempt in range(1, max_retries + 1):
             _, texts, recognized = self.capture_text()
             print(f" [{index:2d}] [ENSURE] attempt {attempt}/{max_retries} -> '{recognized}'")
@@ -69,6 +67,12 @@ class ForgeBot:
 
             if self.is_flatstone_menu(recognized):
                 print(f" [{index:2d}] [ENSURE] flatstone -> enter relic menu")
+                self.keyboard.press(self.cfg.KEY_INTERACT)
+                time.sleep(self.cfg.WAIT_ANIM_EXTRA)
+                continue
+
+            if self.is_main_menu(recognized):
+                print(f" [{index:2d}] [ENSURE] main menu -> open flatstone path")
                 self.keyboard.press(self.cfg.KEY_INTERACT)
                 time.sleep(self.cfg.WAIT_ANIM_EXTRA)
                 continue
@@ -84,24 +88,16 @@ class ForgeBot:
             time.sleep(max(self.cfg.WAIT_ANIM, self.cfg.POLL_INTERVAL))
 
         return False
-
+    
     def is_relic_menu(self, text: str) -> bool:
-        """
-        Returns true if the given text contains any of the relic menu tokens
-        configured in self.cfg.RELIC_TOKENS.
-        """
-        if not self.cfg.RELIC_TOKENS:
-            return True
-        t = text.lower()
-        return any(tok in t for tok in self.cfg.RELIC_TOKENS)
+        return self.state_machine.is_relic_menu(text)
 
     def is_flatstone_menu(self, text: str) -> bool:
-        if not self.cfg.FLATSTONE_TOKENS:
-            return False
-        t = text.lower()
-        hits = sum(1 for tok in self.cfg.FLATSTONE_TOKENS if tok in t)
-        return hits >= 2
+        return self.state_machine.is_flatstone_menu(text)
 
+    def is_main_menu(self, text: str) -> bool:
+        return self.state_machine.is_main_menu(text)
+    
     def is_partial_relic_overlay(self, text: str) -> bool:
         t = text.lower()
         return (
@@ -113,7 +109,17 @@ class ForgeBot:
 
     def looks_like_action_menu(self, text: str) -> bool:
         t = (text or "").lower()
-        return any(token in t for token in ("close", "reset", "favorites", "sell"))
+
+        # Real relic menu usually contains add/remove/favorites/sell UI tokens.
+        # Do not treat that as an overlay/action popup.
+        if self.is_relic_menu(t):
+            return False
+
+        # Only detect tiny close/reset popups with almost no relic content.
+        has_overlay_tokens = ("close" in t and "reset" in t)
+        has_relic_tokens = any(tok in t for tok in self.cfg.RELIC_TOKENS)
+
+        return has_overlay_tokens and not has_relic_tokens and len(t) < 40
 
     def capture_text(self) -> Tuple[np.ndarray, list, str]:
         image = self.capture.capture()
@@ -186,9 +192,17 @@ class ForgeBot:
             new_text = "".join([fuzzy_clean_text(t) for t in new_texts])
 
             if self.looks_like_action_menu(new_text):
-                print(f"  [SYNC] Action menu detected: '{new_text}' → skip")
+                print(f"  [SYNC] Overlay/action popup detected: '{new_text}' -> skip")
                 time.sleep(poll_interval)
                 continue
+
+            if self.is_relic_menu(new_text) and self.is_valid_ocr_text(new_text, prev_text):
+                print(f"  [SYNC] ✓ Next relic menu detected: '{new_text}'")
+                return new_frame, new_text
+
+            if self.is_main_menu(new_text):
+                print(f"  [SYNC] main menu detected during sync: '{new_text}'")
+                return new_frame, new_text
 
             if not self.is_valid_ocr_text(new_text, prev_text):
                 print(f"  [SYNC] Invalid OCR: '{new_text}' (len={len(new_text)})")

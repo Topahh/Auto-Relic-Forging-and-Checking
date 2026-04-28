@@ -33,6 +33,7 @@ class TickInput:
     min_text_len: int
     relic_token_hits: int = 0
     flatstone_token_hits: int = 0
+    main_menu_token_hits: int = 0
 
 
 @dataclass
@@ -45,6 +46,7 @@ class FlowContext:
     skip_sent: bool = False
     recovering: bool = False
     round_active: bool = False
+    pending_new_round: bool = False
     last_action: Optional[Action] = None
     last_state: UIState = UIState.UNKNOWN
     empty_ticks: int = 0
@@ -57,6 +59,7 @@ class FlowContext:
         self.skip_sent = False
         self.recovering = False
         self.round_active = False
+        self.pending_new_round = False
         self.last_action = None
         self.empty_ticks = 0
 
@@ -79,11 +82,21 @@ class ForgeBotStateMachine:
     - does not press keys itself
     """
 
-    def __init__(self, relic_tokens: list[str], flatstone_tokens: list[str], min_text_len: int, batch_size: int):
+    def __init__(
+        self,
+        relic_tokens: list[str],
+        flatstone_tokens: list[str],
+        main_menu_tokens: list[str],
+        min_text_len: int,
+        batch_size: int,
+    ):
         self.relic_tokens = [t.lower() for t in relic_tokens]
         self.flatstone_tokens = [t.lower() for t in flatstone_tokens]
+        self.main_menu_tokens = [t.lower() for t in main_menu_tokens]
         self.min_text_len = min_text_len
         self.batch_size = batch_size
+
+    # Classify states based on token hits and text length
 
     def _count_hits(self, text: str, tokens: list[str]) -> int:
         if not text:
@@ -96,13 +109,44 @@ class ForgeBotStateMachine:
 
         relic_hits = self._count_hits(text, self.relic_tokens)
         flatstone_hits = self._count_hits(text, self.flatstone_tokens)
+        main_menu_hits = self._count_hits(text, self.main_menu_tokens)
 
         return TickInput(
             recognized_text=text,
             min_text_len=self.min_text_len,
             relic_token_hits=relic_hits,
             flatstone_token_hits=flatstone_hits,
+            main_menu_token_hits=main_menu_hits,
         )
+
+# region menu classification rules
+
+    def _menu_score(self, text: str, tokens: list[str]) -> int:
+        if not text:
+            return 0
+        t = text.lower()
+        return sum(1 for tok in tokens if tok and tok in t)
+
+    def _is_relic_menu(self, tick: TickInput) -> bool:
+        return tick.relic_token_hits >= 2
+
+    def _is_flatstone_menu(self, tick: TickInput) -> bool:
+        return tick.flatstone_token_hits >= 2
+
+    def _is_main_menu(self, tick: TickInput) -> bool:
+        return tick.main_menu_token_hits >= 2
+
+    def is_relic_menu(self, text: str) -> bool:
+        tick = self.detect_state(text, FlowContext())
+        return self._is_relic_menu(tick)
+
+    def is_flatstone_menu(self, text: str) -> bool:
+        tick = self.detect_state(text, FlowContext())
+        return self._is_flatstone_menu(tick)
+
+    def is_main_menu(self, text: str) -> bool:
+        tick = self.detect_state(text, FlowContext())
+        return self._is_main_menu(tick)
 
     def classify_state(self, tick: TickInput, ctx: FlowContext) -> UIState:
         text = tick.recognized_text
@@ -110,13 +154,20 @@ class ForgeBotStateMachine:
         if not text or len(text) < tick.min_text_len:
             if ctx.transition_started:
                 return UIState.TRANSITION
-            return UIState.MAIN_MENU
+            return UIState.UNKNOWN
 
-        if tick.relic_token_hits >= 1:
+        relic_hits = tick.relic_token_hits
+        flatstone_hits = tick.flatstone_token_hits
+        main_hits = tick.main_menu_token_hits
+
+        if relic_hits >= 2 and relic_hits > flatstone_hits and relic_hits > main_hits:
             return UIState.RELIC_MENU
 
-        if tick.flatstone_token_hits >= 2:
+        if flatstone_hits >= 2 and flatstone_hits > relic_hits and flatstone_hits > main_hits:
             return UIState.FLATSTONE_MENU
+
+        if main_hits >= 1 and relic_hits < 2 and flatstone_hits < 2:
+            return UIState.MAIN_MENU
 
         if ctx.transition_started:
             return UIState.TRANSITION
@@ -212,11 +263,26 @@ class ForgeBotStateMachine:
 
         # ---- MAIN MENU ----
         if state == UIState.MAIN_MENU:
+            updates["recovering"] = False
+            updates["transition_started"] = False
+            updates["skip_sent"] = False
+
             if ctx.round_active and ctx.processed_relics >= ctx.batch_size:
+                updates["pending_new_round"] = True
                 return TickDecision(
                     state=state,
                     action=Action.RESET_ROUND,
-                    reason="Returned to main menu after completed batch",
+                    reason="Confirmed main menu after completed batch, reset before next round",
+                    updates=updates,
+                )
+
+            if ctx.pending_new_round:
+                updates["pending_new_round"] = False
+                updates["round_active"] = True
+                return TickDecision(
+                    state=state,
+                    action=Action.ENTER_FLATSTONE,
+                    reason="Confirmed main menu after reset, start next round",
                     updates=updates,
                 )
 
@@ -225,14 +291,14 @@ class ForgeBotStateMachine:
                 return TickDecision(
                     state=state,
                     action=Action.ENTER_FLATSTONE,
-                    reason="Main menu detected, start cycle by entering flatstone",
+                    reason="Confirmed main menu, start first cycle",
                     updates=updates,
                 )
 
             return TickDecision(
                 state=state,
                 action=Action.WAIT,
-                reason="Main menu detected during active round, wait or external recovery",
+                reason="Confirmed main menu during active round, wait",
                 updates=updates,
             )
 
