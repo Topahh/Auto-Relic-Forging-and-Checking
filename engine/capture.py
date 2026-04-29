@@ -1,14 +1,18 @@
 import os
 import cv2
+import time
 import datetime
 import subprocess
 import tempfile
 import numpy as np
 from PIL import Image
+from typing import Optional
+
 
 # ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
+
 
 def _readline_with_timeout(stream, timeout: float = 20.0) -> str:
     """Read one line from *stream* with a wall-clock timeout."""
@@ -39,6 +43,10 @@ class ScreenCapture:
         self.debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
         os.makedirs(self.debug_dir, exist_ok=True)
         self._calibration = None
+        # Tracks consecutive PipeWire sample failures to trigger helper restart
+        self._pipewire_fail_count = 0
+        self._pipewire_fail_threshold = 5
+
         if region is not None:
             if len(region) == 4:
                 self.set_calibration(*region)
@@ -50,10 +58,10 @@ class ScreenCapture:
     # Helper process management
     # ------------------------------------------------------------------
 
+
     def _ensure_helper(self):
         """
         Spawn the Wayland capture helper process if it is not already running.
-
         Waits for the helper to emit 'READY' on stdout before returning.
         Raises RuntimeError if the helper is missing or fails to initialize.
         """
@@ -83,58 +91,111 @@ class ScreenCapture:
                 f"[ERROR] ScreenCast helper failed to initialize. "
                 f"Response: {line!r}. stderr: {stderr}"
             )
+        # Reset fail counter on successful (re)spawn
+        self._pipewire_fail_count = 0
+
+
+    def _force_restart_helper(self):
+        """Forcefully terminate and respawn the helper process."""
+        print("[CAPTURE] Forcing helper restart due to repeated PipeWire failures...")
+        try:
+            if self.helper is not None and self.helper.poll() is None:
+                self.helper.terminate()
+                self.helper.wait(timeout=3)
+        except Exception:
+            pass
+        self.helper = None
+        self._pipewire_fail_count = 0
+        self._ensure_helper()
 
 
     # ------------------------------------------------------------------
     # Raw full-screen capture  (BGR numpy array — Wayland-safe)
     # ------------------------------------------------------------------
 
-    def capture_full(self) -> np.ndarray:
+
+    def capture_full(self, retries: int = 3, retry_delay: float = 0.15) -> Optional[np.ndarray]:
         """
         Request a full-screen capture from the helper and return it as a
-        BGR numpy array.  The region is NEVER passed to the helper — this
-        is intentional: Wayland region captures are unreliable across
-        compositors.  Cropping is always done in Python (see grab/capture).
+        BGR numpy array, or None on transient PipeWire failure.
 
-        The helper writes a PNG to a temporary file; this method reads it
-        with OpenCV and deletes the temporary file before returning.
+        Retries up to `retries` times on "ERR No sample" before giving up.
+        Returns None instead of raising, so callers can decide how to react.
+        Fatal errors (helper crash, PNG unreadable) still raise RuntimeError.
         """
-        self._ensure_helper()
+        for attempt in range(1, retries + 1):
+            self._ensure_helper()
 
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp_path = tmp.name
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
 
-        try:
-            self.helper.stdin.write(f"CAPTURE {tmp_path}\n")
-            self.helper.stdin.flush()
-
-            reply = _readline_with_timeout(self.helper.stdout, timeout=20).strip()
-            if not reply.startswith("OK "):
-                raise RuntimeError(f"[ERROR] Capture helper failed: {reply}")
-
-            img = cv2.imread(tmp_path, cv2.IMREAD_COLOR)
-            if img is None:
-                raise RuntimeError(f"[ERROR] Could not read PNG produced by helper: {tmp_path}")
-
-            return img
-        finally:
             try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+                self.helper.stdin.write(f"CAPTURE {tmp_path}\n")
+                self.helper.stdin.flush()
+
+                reply = _readline_with_timeout(self.helper.stdout, timeout=20).strip()
+
+                if reply.startswith("OK "):
+                    # Success path
+                    img = cv2.imread(tmp_path, cv2.IMREAD_COLOR)
+                    if img is None:
+                        raise RuntimeError(
+                            f"[ERROR] Could not read PNG produced by helper: {tmp_path}"
+                        )
+                    self._pipewire_fail_count = 0
+                    return img
+
+                # ---- Transient PipeWire error ----
+                if "No sample received" in reply or reply.startswith("ERR"):
+                    self._pipewire_fail_count += 1
+                    print(
+                        f"[CAPTURE] PipeWire transient error (attempt {attempt}/{retries},"
+                        f" total_fails={self._pipewire_fail_count}): {reply}"
+                    )
+
+                    # If too many consecutive failures, restart the helper entirely
+                    if self._pipewire_fail_count >= self._pipewire_fail_threshold:
+                        try:
+                            self._force_restart_helper()
+                        except Exception as e:
+                            print(f"[CAPTURE] Helper restart failed: {e}")
+                            return None
+
+                    if attempt < retries:
+                        time.sleep(retry_delay)
+                        continue
+
+                    # Max retries exhausted — return None, do not crash
+                    print(f"[CAPTURE] Max retries exhausted, returning None")
+                    return None
+
+                # ---- Unknown error format ----
+                print(f"[CAPTURE] Unexpected helper reply: {reply!r}")
+                return None
+
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        return None
 
 
     # ------------------------------------------------------------------
     # Calibration
     # ------------------------------------------------------------------
 
+
     def set_calibration(self, left: int, top: int, width: int, height: int):
         """Store the popup crop region as (left, top, width, height)."""
         self._calibration = (left, top, width, height)
 
+
     def set_region_xywh(self, x: int, y: int, w: int, h: int):
         """Alias of set_calibration() — preferred for readability."""
         self._calibration = (x, y, w, h)
+
 
     def clear_calibration(self):
         """Remove the crop region — grab() will return the full frame."""
@@ -145,16 +206,20 @@ class ScreenCapture:
     # Cropped numpy capture  (internal / legacy)
     # ------------------------------------------------------------------
 
-    def capture(self) -> np.ndarray:
+
+    def capture(self) -> Optional[np.ndarray]:
         """
-        Full-screen capture then optional crop.  Returns a BGR numpy array.
+        Full-screen capture then optional crop.  Returns a BGR numpy array,
+        or None if the capture failed transiently (PipeWire no sample).
 
         Debug files (full_*.png / crop_*.png) are written to debug_dir ONLY
-        when debug_mode=True, so normal OCR polling never hits the disk.
+        when debug_mode=True.
 
-        Raises RuntimeError if the calibration rectangle is out of bounds.
+        Raises RuntimeError only if the calibration rectangle is out of bounds.
         """
         img = self.capture_full()
+        if img is None:
+            return None
 
         if self._calibration is None:
             if self.debug_mode:
@@ -190,16 +255,18 @@ class ScreenCapture:
     # PIL helpers  (used by OCREngine and the guard loop)
     # ------------------------------------------------------------------
 
-    def grab(self) -> Image.Image:
+
+    def grab(self) -> Optional[Image.Image]:
         """
         Main method for OCR consumption.
 
         Captures the full screen via Wayland, crops to the calibrated popup
         region (if set), then converts BGR → RGB → PIL Image.
-
-        No files are written.  Safe to call in tight polling loops.
+        Returns None on transient PipeWire failure.
         """
         img_bgr = self.capture_full()
+        if img_bgr is None:
+            return None
 
         if self._calibration is not None:
             left, top, width, height = self._calibration
@@ -214,9 +281,11 @@ class ScreenCapture:
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         return Image.fromarray(img_rgb)
 
-    def grab_full(self) -> Image.Image:
+
+    def grab_full(self) -> Optional[Image.Image]:
         """
         Full-screen capture without any cropping, returned as a PIL Image.
+        Returns None on transient PipeWire failure.
 
         Use this for calibration debug: save the result, open it in a viewer,
         find the popup coordinates, then call set_calibration().
@@ -224,6 +293,8 @@ class ScreenCapture:
             cap.grab_full().save("/tmp/hajiwo_fullscreen.png")
         """
         img_bgr = self.capture_full()
+        if img_bgr is None:
+            return None
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         return Image.fromarray(img_rgb)
 
@@ -232,17 +303,17 @@ class ScreenCapture:
     # On-demand debug snapshot  (call explicitly, not automatically)
     # ------------------------------------------------------------------
 
-    def save_debug_snapshot(self, label: str = "debug"):
+
+    def save_debug_snapshot(self, label: str = "debug") -> Optional[str]:
         """
         Manually save a full+crop PNG pair to debug_dir.
-
-        Call this from run_round() or process_item() when you want a one-off
-        snapshot without enabling debug_mode globally.
-
-            self.capture.save_debug_snapshot("after_forge_start")
-            self.capture.save_debug_snapshot(f"before_item_{item_idx}")
+        Returns the full image path, or None if capture failed.
         """
         img_bgr = self.capture_full()
+        if img_bgr is None:
+            print(f"[CAPTURE] save_debug_snapshot({label!r}): capture returned None, skipping")
+            return None
+
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
         full_path = os.path.join(self.debug_dir, f"full_{label}_{ts}.png")
@@ -265,10 +336,10 @@ class ScreenCapture:
     # Cleanup
     # ------------------------------------------------------------------
 
+
     def close(self):
         """
         Gracefully shut down the helper process.
-
         Sends a QUIT command and waits for acknowledgment before terminating.
         Silently ignores errors — the process is forcefully terminated if needed.
         """
