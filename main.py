@@ -30,7 +30,9 @@ class ForgeBot:
         self.matcher = ItemMatcher(self.cfg)
         self.capture = ScreenCapture(self.cfg.SCAN_REGION)
         self.debug_screenshot()
-        self.stats = Statistics(self.cfg.lang)
+        self.stats = Statistics(self.cfg.lang, max_in_memory_details=300)
+        self.log_path = None
+        self.last_stats_flush_scanned = 0
         self.stop_signal = StopSignal(self.cfg.lang)
         self.stop_signal.clear()
         self.locker = None
@@ -53,6 +55,29 @@ class ForgeBot:
                 ensure_relic_menu=self.ensure_relic_menu,
             ),
         )
+
+    def flush_stats_if_needed(self, force: bool = False):
+        """
+        Periodically append stats to disk and free detailed OCR lists.
+        Counters remain intact.
+        """
+        if not self.log_path:
+            return
+
+        scanned_delta = self.stats.scanned - self.last_stats_flush_scanned
+        should_flush = force or scanned_delta >= 150
+
+        if not should_flush:
+            return
+
+        suffix = f"snapshot #{self.stats.flush_count + 1} @ scanned={self.stats.scanned}"
+        self.stats.append_log_snapshot(
+            self.log_path,
+            header_suffix=suffix,
+            include_details=True,
+            clear_after_write=True,
+        )
+        self.last_stats_flush_scanned = self.stats.scanned
 
 # endregion
 # region 
@@ -399,32 +424,67 @@ class ForgeBot:
             print(f"{i}...")
             time.sleep(1)
 
+        # Archivage
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"hajiwo_log_{timestamp}.txt"
+        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
+        os.makedirs(script_dir, exist_ok=True)
+        self.log_path = os.path.join(script_dir, log_filename)
+
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("[SESSION START]\n\n")
+
         try:
             while not self.stop_signal.should_stop():
-                if not self.tick():
-                    print("[WARNING] Tick failed, retrying...")
+                try:
+                    if not self.tick():
+                        print("[WARNING] Tick failed, retrying...")
+                        time.sleep(1)
+
+                    self.flush_stats_if_needed(force=False)
+
+                except RuntimeError as e:
+                    print(f"[WARNING] Transient runtime error in tick: {e} — retrying in 1s")
                     time.sleep(1)
+
         except KeyboardInterrupt:
             print("\n[INTERRUPTED]")
+
         except Exception as e:
             print(f"\n[ERROR] {e}")
             import traceback
             traceback.print_exc()
+
         finally:
             self.stop_signal.event.set()
             time.sleep(0.2)
+
             if self.locker:
                 self.locker.stop()
+
+            try:
+                self.flush_stats_if_needed(force=True)
+            except Exception as e:
+                print(f"[WARNING] Failed to flush stats on shutdown: {e}")
+
             self.stats.print_report()
+
+            if self.log_path:
+                try:
+                    self.stats.append_log_snapshot(
+                        self.log_path,
+                        header_suffix="final summary",
+                        include_details=True,
+                        clear_after_write=False,
+                    )
+                    print(f"\n[OK] {self.cfg.lang.get('log_saved')}: {self.log_path}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to append final summary: {e}")
+
             try:
                 self.capture.close()
             except Exception:
                 pass
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_filename = f"hajiwo_log_{timestamp}.txt"
-            script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
-            log_path = os.path.join(script_dir, log_filename)
-            self.stats.save_log(log_path)
 
     def debug_screenshot(self):
         img = self.capture.capture()
