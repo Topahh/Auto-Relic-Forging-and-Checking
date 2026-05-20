@@ -1,3 +1,13 @@
+# engine/capture.py
+# Cross-platform screen capture for hajiwo.
+#
+# Backend selection happens ONCE at __init__ via method binding:
+#   Linux Wayland  →  ScreenCast DBus helper (wayland_capture_helper.py)
+#   Windows / X11  →  pyautogui.screenshot()
+#
+# After __init__, self.capture_full points directly to the right
+# implementation — no per-call branching.
+
 import os
 import cv2
 import time
@@ -7,6 +17,8 @@ import tempfile
 import numpy as np
 from PIL import Image
 from typing import Optional
+
+from engine.platform_detect import is_wayland
 
 
 # ---------------------------------------------------------------------------
@@ -33,19 +45,17 @@ class ScreenCapture:
         debug_mode  : when True, capture() saves full+crop PNGs to debug_dir.
                       Off by default — avoids disk I/O during normal OCR polling.
         """
-        self.region       = region
-        self.debug_mode   = debug_mode
-        self.helper       = None
-        self.helper_path  = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "wayland_capture_helper.py"
-        )
-        self.debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
+        self.region     = region
+        self.debug_mode = debug_mode
+        self.debug_dir  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_captures")
         os.makedirs(self.debug_dir, exist_ok=True)
         self._calibration = None
-        # Tracks consecutive PipeWire sample failures to trigger helper restart
-        self._pipewire_fail_count = 0
-        self._pipewire_fail_threshold = 5
+
+        # Dispatch ONCE — no branching at call time
+        if is_wayland():
+            self._init_wayland()
+        else:
+            self._init_pyautogui()
 
         if region is not None:
             if len(region) == 4:
@@ -55,9 +65,37 @@ class ScreenCapture:
 
 
     # ------------------------------------------------------------------
-    # Helper process management
+    # Backend initializers
     # ------------------------------------------------------------------
 
+    def _init_wayland(self):
+        """Set up the Wayland ScreenCast helper and bind capture_full."""
+        self.helper      = None
+        self.helper_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "wayland_capture_helper.py"
+        )
+        self._pipewire_fail_count     = 0
+        self._pipewire_fail_threshold = 5
+        # Bind
+        self.capture_full = self._capture_full_wayland
+
+    def _init_pyautogui(self):
+        """Set up the pyautogui backend and bind capture_full."""
+        try:
+            import pyautogui  # verify at init time
+        except ImportError:
+            raise RuntimeError(
+                "[ERROR] pyautogui is not installed. "
+                "Install it with: pip install pyautogui"
+            )
+        # Bind
+        self.capture_full = self._capture_full_pyautogui
+
+
+    # ------------------------------------------------------------------
+    # Wayland — helper process management
+    # ------------------------------------------------------------------
 
     def _ensure_helper(self):
         """
@@ -94,7 +132,6 @@ class ScreenCapture:
         # Reset fail counter on successful (re)spawn
         self._pipewire_fail_count = 0
 
-
     def _force_restart_helper(self):
         """Forcefully terminate and respawn the helper process."""
         print("[CAPTURE] Forcing helper restart due to repeated PipeWire failures...")
@@ -110,17 +147,16 @@ class ScreenCapture:
 
 
     # ------------------------------------------------------------------
-    # Raw full-screen capture  (BGR numpy array — Wayland-safe)
+    # Wayland — raw full-screen capture
     # ------------------------------------------------------------------
 
-
-    def capture_full(self, retries: int = 3, retry_delay: float = 0.15) -> Optional[np.ndarray]:
+    def _capture_full_wayland(self, retries: int = 3, retry_delay: float = 0.15) -> Optional[np.ndarray]:
         """
-        Request a full-screen capture from the helper and return it as a
-        BGR numpy array, or None on transient PipeWire failure.
+        Request a full-screen capture from the ScreenCast helper and return it
+        as a BGR numpy array, or None on transient PipeWire failure.
 
         Retries up to `retries` times on "ERR No sample" before giving up.
-        Returns None instead of raising, so callers can decide how to react.
+        Returns None instead of raising so callers can decide how to react.
         Fatal errors (helper crash, PNG unreadable) still raise RuntimeError.
         """
         for attempt in range(1, retries + 1):
@@ -136,7 +172,6 @@ class ScreenCapture:
                 reply = _readline_with_timeout(self.helper.stdout, timeout=20).strip()
 
                 if reply.startswith("OK "):
-                    # Success path
                     img = cv2.imread(tmp_path, cv2.IMREAD_COLOR)
                     if img is None:
                         raise RuntimeError(
@@ -153,7 +188,6 @@ class ScreenCapture:
                         f" total_fails={self._pipewire_fail_count}): {reply}"
                     )
 
-                    # If too many consecutive failures, restart the helper entirely
                     if self._pipewire_fail_count >= self._pipewire_fail_threshold:
                         try:
                             self._force_restart_helper()
@@ -165,7 +199,6 @@ class ScreenCapture:
                         time.sleep(retry_delay)
                         continue
 
-                    # Max retries exhausted — return None, do not crash
                     print(f"[CAPTURE] Max retries exhausted, returning None")
                     return None
 
@@ -183,19 +216,40 @@ class ScreenCapture:
 
 
     # ------------------------------------------------------------------
-    # Calibration
+    # Windows / X11 — raw full-screen capture
     # ------------------------------------------------------------------
 
+    def _capture_full_pyautogui(self, retries: int = 3, retry_delay: float = 0.15) -> Optional[np.ndarray]:
+        """Full-screen capture via pyautogui (Windows / X11)."""
+        try:
+            import pyautogui
+            screenshot = pyautogui.screenshot()
+            return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            print(f"[CAPTURE] pyautogui capture failed: {e}")
+            return None
+
+
+    # ------------------------------------------------------------------
+    # Public stub — replaced by method binding at __init__ time.
+    # Defined here only so IDEs / type checkers see the signature.
+    # ------------------------------------------------------------------
+
+    def capture_full(self, retries: int = 3, retry_delay: float = 0.15) -> Optional[np.ndarray]:
+        raise NotImplementedError("Backend not initialized")
+
+
+    # ------------------------------------------------------------------
+    # Calibration
+    # ------------------------------------------------------------------
 
     def set_calibration(self, left: int, top: int, width: int, height: int):
         """Store the popup crop region as (left, top, width, height)."""
         self._calibration = (left, top, width, height)
 
-
     def set_region_xywh(self, x: int, y: int, w: int, h: int):
         """Alias of set_calibration() — preferred for readability."""
         self._calibration = (x, y, w, h)
-
 
     def clear_calibration(self):
         """Remove the crop region — grab() will return the full frame."""
@@ -206,11 +260,10 @@ class ScreenCapture:
     # Cropped numpy capture  (internal / legacy)
     # ------------------------------------------------------------------
 
-
     def capture(self) -> Optional[np.ndarray]:
         """
         Full-screen capture then optional crop.  Returns a BGR numpy array,
-        or None if the capture failed transiently (PipeWire no sample).
+        or None if the capture failed transiently.
 
         Debug files (full_*.png / crop_*.png) are written to debug_dir ONLY
         when debug_mode=True.
@@ -255,14 +308,13 @@ class ScreenCapture:
     # PIL helpers  (used by OCREngine and the guard loop)
     # ------------------------------------------------------------------
 
-
     def grab(self) -> Optional[Image.Image]:
         """
         Main method for OCR consumption.
 
-        Captures the full screen via Wayland, crops to the calibrated popup
-        region (if set), then converts BGR → RGB → PIL Image.
-        Returns None on transient PipeWire failure.
+        Captures the full screen, crops to the calibrated popup region (if set),
+        then converts BGR → RGB → PIL Image.
+        Returns None on transient capture failure.
         """
         img_bgr = self.capture_full()
         if img_bgr is None:
@@ -281,11 +333,10 @@ class ScreenCapture:
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         return Image.fromarray(img_rgb)
 
-
     def grab_full(self) -> Optional[Image.Image]:
         """
         Full-screen capture without any cropping, returned as a PIL Image.
-        Returns None on transient PipeWire failure.
+        Returns None on transient failure.
 
         Use this for calibration debug: save the result, open it in a viewer,
         find the popup coordinates, then call set_calibration().
@@ -302,7 +353,6 @@ class ScreenCapture:
     # ------------------------------------------------------------------
     # On-demand debug snapshot  (call explicitly, not automatically)
     # ------------------------------------------------------------------
-
 
     def save_debug_snapshot(self, label: str = "debug") -> Optional[str]:
         """
@@ -336,14 +386,14 @@ class ScreenCapture:
     # Cleanup
     # ------------------------------------------------------------------
 
-
     def close(self):
         """
-        Gracefully shut down the helper process.
+        Gracefully shut down the helper process (Wayland only).
         Sends a QUIT command and waits for acknowledgment before terminating.
         Silently ignores errors — the process is forcefully terminated if needed.
+        No-op on Windows / X11 (no helper process).
         """
-        if self.helper is None:
+        if not hasattr(self, 'helper') or self.helper is None:
             return
 
         try:

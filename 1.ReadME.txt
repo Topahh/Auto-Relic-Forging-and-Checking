@@ -38,6 +38,7 @@ project/
 │   ├── ocr.py                      ← Classe OCREngine (PaddleOCR, lang='en')
 │   ├── locker.py                   ← Classe CurrencyLocker (pymem, Windows only, désactivé Linux)
 |   ├── flow.py                     ← Classe FlowHooks, ForgeFlow
+|   ├── plateform_detect.py         ← Classe Platform (Windows, Wayland, Xorg integration)
 |   └── state_machine.py            ← Classe ForgeBotStateMachine, UIState, Action, TickInput, FlowContext, TickDecision
 └── utils/
     ├── __init__.py
